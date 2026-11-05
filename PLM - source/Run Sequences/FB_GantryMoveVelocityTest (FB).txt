@@ -1,0 +1,451 @@
+FUNCTION_BLOCK FB_GantryMoveVelocityTest
+VAR_INPUT
+    Execute : BOOL;
+	Abort : BOOL;
+
+    // Velocity at the low-speed points: X = 100 and X = 200.
+    SlowVelocity : LREAL := 5.0;
+
+    // Velocity away from the low-speed points.
+    FastVelocity : LREAL := 30.0;
+
+    // Distance either side of 100 and 200 over which the
+    // velocity ramps between SlowVelocity and FastVelocity.
+    SlowZoneHalfWidth : LREAL := 25.0;
+
+    Acceleration : LREAL := 17.0;
+    Deceleration : LREAL := 25.0;
+    Jerk         : LREAL := 0.0;
+
+    // Number of PLC scans between velocity updates.
+    UpdateEveryNCycles : UINT := 5;
+END_VAR
+
+VAR_IN_OUT
+    Axis : AXIS_REF;
+END_VAR
+
+VAR_OUTPUT
+    Busy            : BOOL;
+    Done            : BOOL;
+    Error           : BOOL;
+    ErrorID         : UDINT;
+
+    State           : INT;
+    ActualPosition  : LREAL;
+    CommandVelocity : LREAL;
+    MovingForward   : BOOL;
+
+    MoveAActive     : BOOL;
+    MoveBActive     : BOOL;
+    MoveAAborted    : BOOL;
+    MoveBAborted    : BOOL;
+END_VAR
+
+VAR
+    fbMoveVelocityA : MC_MoveVelocity;
+    fbMoveVelocityB : MC_MoveVelocity;
+    fbHalt          : MC_Halt;
+
+    bExecuteA    : BOOL;
+    bExecuteB    : BOOL;
+    bHaltExecute : BOOL;
+
+    bUseMoveA    : BOOL;
+    bLastExecute : BOOL;
+    bIssueUpdate : BOOL;
+
+    eDirectionA : MC_Direction := MC_Positive_Direction;
+    eDirectionB : MC_Direction := MC_Positive_Direction;
+
+    lrVelocityA : LREAL;
+    lrVelocityB : LREAL;
+
+    lrDistanceFrom100 : LREAL;
+    lrDistanceFrom200 : LREAL;
+    lrNearestSlowPoint : LREAL;
+    lrInterpolation : LREAL;
+
+    nCycleCounter : UINT;
+END_VAR
+
+
+// ------------------------------------------------------------
+// Default each Execute pulse to FALSE.
+//
+// When a new velocity command is required, one of these is set
+// TRUE later in this scan. On the following scan it returns
+// FALSE, giving a clean one-cycle Execute pulse.
+// ------------------------------------------------------------
+bExecuteA := FALSE;
+bExecuteB := FALSE;
+bIssueUpdate := FALSE;
+
+
+// Read actual axis position.
+ActualPosition := Axis.NcToPlc.ActPos;
+
+
+// ------------------------------------------------------------
+// External Execute rising edge: start a new test.
+// ------------------------------------------------------------
+IF Execute AND NOT bLastExecute THEN
+    Busy := TRUE;
+    Done := FALSE;
+    Error := FALSE;
+    ErrorID := 0;
+
+    MovingForward := TRUE;
+
+    bUseMoveA := FALSE;
+    bHaltExecute := FALSE;
+
+    nCycleCounter := 0;
+
+    State := 10;
+END_IF;
+
+
+// ------------------------------------------------------------
+// Reset after the external Execute input goes FALSE.
+//
+// Note: setting the MC_MoveVelocity Execute inputs FALSE does
+// not stop the axis. Normal completion of this test therefore
+// occurs only after MC_Halt has stopped it.
+// ------------------------------------------------------------
+IF NOT Execute THEN
+    IF Done OR Error THEN
+        Busy := FALSE;
+        State := 0;
+    END_IF
+END_IF;
+
+
+// ------------------------------------------------------------
+// Calculate the requested velocity.
+//
+// The nearest low-speed point is either X = 100 or X = 200.
+//
+// At the slow point:
+//     CommandVelocity = SlowVelocity
+//
+// SlowZoneHalfWidth away from the slow point:
+//     CommandVelocity = FastVelocity
+//
+// Between those positions:
+//     linearly interpolate between slow and fast.
+// ------------------------------------------------------------
+lrDistanceFrom100 := ABS(ActualPosition - 100.0);
+lrDistanceFrom200 := ABS(ActualPosition - 200.0);
+
+lrNearestSlowPoint := MIN(
+    lrDistanceFrom100,
+    lrDistanceFrom200
+);
+
+IF SlowZoneHalfWidth > 0.0 THEN
+
+    lrInterpolation :=
+        LIMIT(
+            0.0,
+            lrNearestSlowPoint / SlowZoneHalfWidth,
+            1.0
+        );
+
+    CommandVelocity :=
+        SlowVelocity
+        + lrInterpolation * (FastVelocity - SlowVelocity);
+
+ELSE
+    CommandVelocity := FastVelocity;
+END_IF;
+
+
+// Ensure a positive velocity magnitude.
+CommandVelocity :=
+    LIMIT(
+        0.0,
+        CommandVelocity,
+        FastVelocity
+    );
+
+
+IF Busy AND (Abort OR NOT Execute) AND (State <> 800) THEN
+    bExecuteA := FALSE;
+    bExecuteB := FALSE;
+    bHaltExecute := TRUE;
+	bIssueUpdate := FALSE;
+    State := 800;
+END_IF
+	
+// ------------------------------------------------------------
+// Main test state machine
+// ------------------------------------------------------------
+IF Busy AND NOT Error THEN
+
+    CASE State OF
+
+        // ----------------------------------------------------
+        // Start forward movement immediately.
+        // ----------------------------------------------------
+        10:
+            MovingForward := TRUE;
+            bIssueUpdate := TRUE;
+            nCycleCounter := 0;
+            State := 20;
+
+
+        // ----------------------------------------------------
+        // Move from 5 toward 300.
+        // ----------------------------------------------------
+        20:
+            MovingForward := TRUE;
+
+            // Check the endpoint before issuing another
+            // velocity update.
+            IF ActualPosition >= 300.0 THEN
+                bHaltExecute := TRUE;
+                State := 30;
+
+            ELSE
+                nCycleCounter := nCycleCounter + 1;
+
+                IF nCycleCounter >= UpdateEveryNCycles THEN
+                    nCycleCounter := 0;
+                    bIssueUpdate := TRUE;
+                END_IF
+            END_IF
+
+
+        // ----------------------------------------------------
+        // Wait for MC_Halt at X = 300.
+        // ----------------------------------------------------
+        30:
+            IF fbHalt.Done THEN
+                bHaltExecute := FALSE;
+
+                // Allow the Halt Execute falling edge to be
+                // processed before issuing the reverse move.
+                State := 31;
+
+            ELSIF fbHalt.Error THEN
+                Error := TRUE;
+                ErrorID := fbHalt.ErrorID;
+                Busy := FALSE;
+                bHaltExecute := FALSE;
+                State := 900;
+            END_IF
+
+
+        // One complete scan with Halt Execute FALSE.
+        31:
+            State := 40;
+
+
+        // ----------------------------------------------------
+        // Start reverse movement immediately.
+        // ----------------------------------------------------
+        40:
+            MovingForward := FALSE;
+            bIssueUpdate := TRUE;
+            nCycleCounter := 0;
+            State := 50;
+
+
+        // ----------------------------------------------------
+        // Move from 300 back toward 20.
+        // ----------------------------------------------------
+        50:
+            MovingForward := FALSE;
+
+            IF ActualPosition <= 20.0 THEN
+                bHaltExecute := TRUE;
+                State := 60;
+
+            ELSE
+                nCycleCounter := nCycleCounter + 1;
+
+                IF nCycleCounter >= UpdateEveryNCycles THEN
+                    nCycleCounter := 0;
+                    bIssueUpdate := TRUE;
+                END_IF
+            END_IF
+
+
+        // ----------------------------------------------------
+        // Wait for final MC_Halt at X = 20.
+        // ----------------------------------------------------
+        60:
+            IF fbHalt.Done THEN
+                bHaltExecute := FALSE;
+                State := 61;
+
+            ELSIF fbHalt.Error THEN
+                Error := TRUE;
+                ErrorID := fbHalt.ErrorID;
+                Busy := FALSE;
+                bHaltExecute := FALSE;
+                State := 900;
+            END_IF
+
+
+        // One scan to release MC_Halt.
+        61:
+            State := 70;
+
+
+        // Test complete.
+        70:
+            Busy := FALSE;
+            Done := TRUE;
+
+		800:
+			IF fbHalt.Done THEN
+				bHaltExecute := FALSE;
+				Busy := FALSE;
+				Error := TRUE;
+				State := 900;
+			ELSIF fbHalt.Error THEN
+				ErrorID := fbHalt.ErrorID;
+				Busy := FALSE;
+				Error := TRUE;
+				bHaltExecute := FALSE;
+				State := 900;
+			END_IF
+
+		850:
+			IF fbHalt.Done THEN
+				bHaltExecute := FALSE;
+				Busy := FALSE;
+				Error := TRUE;
+				State := 900;
+		
+			ELSIF fbHalt.Error THEN
+				bHaltExecute := FALSE;
+				Busy := FALSE;
+				Error := TRUE;
+				ErrorID := fbHalt.ErrorID;
+				State := 900;
+			END_IF
+
+        // Error state.
+        900:
+            Busy := FALSE;
+            bHaltExecute := FALSE;
+
+    END_CASE
+
+END_IF;
+
+
+// ------------------------------------------------------------
+// Issue a new velocity command.
+//
+// Each update alternates between A and B. The newly triggered
+// instance uses MC_Aborting, replacing the command issued by
+// the other instance.
+// ------------------------------------------------------------
+IF bIssueUpdate THEN
+
+    bUseMoveA := NOT bUseMoveA;
+
+    IF bUseMoveA THEN
+        lrVelocityA := CommandVelocity;
+
+        IF MovingForward THEN
+            eDirectionA := MC_Positive_Direction;
+        ELSE
+            eDirectionA := MC_Negative_Direction;
+        END_IF
+
+        bExecuteA := TRUE;
+
+    ELSE
+        lrVelocityB := CommandVelocity;
+
+        IF MovingForward THEN
+            eDirectionB := MC_Positive_Direction;
+        ELSE
+            eDirectionB := MC_Negative_Direction;
+        END_IF
+
+        bExecuteB := TRUE;
+    END_IF
+
+END_IF;
+
+
+// ------------------------------------------------------------
+// Call each MC function block exactly once per PLC cycle.
+// ------------------------------------------------------------
+fbMoveVelocityA(
+    Axis         := Axis,
+    Execute      := bExecuteA,
+    Velocity     := lrVelocityA,
+    Acceleration := Acceleration,
+    Deceleration := Deceleration,
+    Jerk         := Jerk,
+    Direction    := eDirectionA,
+    BufferMode   := MC_Aborting
+);
+
+fbMoveVelocityB(
+    Axis         := Axis,
+    Execute      := bExecuteB,
+    Velocity     := lrVelocityB,
+    Acceleration := Acceleration,
+    Deceleration := Deceleration,
+    Jerk         := Jerk,
+    Direction    := eDirectionB,
+    BufferMode   := MC_Aborting
+);
+
+fbHalt(
+    Axis         := Axis,
+    Execute      := bHaltExecute,
+    Deceleration := Deceleration,
+    Jerk         := Jerk,
+    BufferMode   := MC_Aborting
+);
+
+
+// ------------------------------------------------------------
+// Monitoring outputs
+// ------------------------------------------------------------
+MoveAActive := fbMoveVelocityA.Active;
+MoveBActive := fbMoveVelocityB.Active;
+
+MoveAAborted := fbMoveVelocityA.CommandAborted;
+MoveBAborted := fbMoveVelocityB.CommandAborted;
+
+
+// ------------------------------------------------------------
+// Error handling
+// ------------------------------------------------------------
+IF fbMoveVelocityA.Error THEN
+    ErrorID := fbMoveVelocityA.ErrorID;
+    bExecuteA := FALSE;
+    bExecuteB := FALSE;
+    bIssueUpdate := FALSE;
+    bHaltExecute := TRUE;
+    State := 850;
+END_IF
+
+IF fbMoveVelocityB.Error THEN
+    ErrorID := fbMoveVelocityB.ErrorID;
+    bExecuteA := FALSE;
+    bExecuteB := FALSE;
+    bIssueUpdate := FALSE;
+    bHaltExecute := TRUE;
+    State := 850;
+END_IF
+
+IF fbHalt.Error THEN
+    Error := TRUE;
+    ErrorID := fbHalt.ErrorID;
+    Busy := FALSE;
+    State := 900;
+END_IF
+
+
+bLastExecute := Execute;

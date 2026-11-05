@@ -1,0 +1,122 @@
+FUNCTION_BLOCK blade_test
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+	foldTimeout 	: TON;
+	fbBladeAbs		: MC_MoveAbsolute;
+	fbBladeHalt 	: MC_Halt;
+	delayTimer2		: TON;
+END_VAR
+VAR
+	nPhase : INT := 0;
+	Busy : BOOL := FALSE;
+	Fail : BOOL := FALSE;
+	Done : BOOL := FALSE;
+	bLastLLMoveExe : BOOL := FALSE;
+	bDelay : BOOL := FALSE; 
+	bBladeAbsExe	: BOOL := FALSE;
+	BladeTgtPos	: LREAL;
+	BladeTgtVel	: LREAL;
+	n : INT := 0;
+END_VAR
+
+
+
+CASE nPhase OF 
+// --------------------------------------------------------------------------------------------------------------------------------------
+	0: // Retract the blade to the top
+		IF NOT fbBladeAbs.Busy THEN
+			BladeTgtPos := -8.0;
+			BladeTgtVel := 40;
+			bBladeAbsExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 1;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBladeAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	1: // Retract the blade to the top continued
+		IF fbBladeAbs.Done THEN
+			bBladeAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 2;
+		ELSIF fbBladeAbs.Error THEN 
+			bBladeAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBladeAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF		
+	
+	2: // lower blade
+		IF NOT fbBladeAbs.Busy THEN
+			BladeTgtPos := 50.0;
+			BladeTgtVel := 40;
+			bBladeAbsExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 3;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBladeAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	3: // lower blade continued
+		IF fbBladeAbs.Done THEN
+			bBladeAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 4;
+		ELSIF fbBladeAbs.Error THEN 
+			bBladeAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBladeAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF		
+	
+	4: // Reset to starting position
+		foldTimeout(IN := FALSE);
+		delaytimer2(IN := TRUE, PT := T#2S);
+		IF delaytimer2.Q THEN
+			nPhase := 0;
+			delayTimer2(IN := FALSE);
+		END_IF
+	
+	
+END_CASE
+
+// blade movement fb call
+fbBladeAbs(Axis := BladeY1, Execute := bBladeAbsExe, Position := BladeTgtPos, Velocity := BladeTgtVel);
+

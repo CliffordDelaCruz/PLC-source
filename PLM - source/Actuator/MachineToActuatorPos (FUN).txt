@@ -1,0 +1,24 @@
+FUNCTION MachineToActuatorPos : DINT
+VAR_INPUT
+	fMMPos : LREAL;
+	nZeroPos : DINT;
+END_VAR
+VAR
+	nRounded : DINT;
+END_VAR
+
+
+// This function converts machine position into actuator control position and converts the REAL to a DINT
+IF fMMPos >= 0.0 THEN
+	nRounded := LREAL_TO_DINT(10*fMMPos);
+ELSE //REVIEW why is this else statement here?
+	nRounded := LREAL_TO_DINT(10*fMMPos);
+END_IF
+
+IF fMMPos = 9999 THEN
+	MachineToActuatorPos := 0; // This is to make it easier to retract the actuator all the way when testing
+ELSE
+	MachineToActuatorPos := nZeroPos - nRounded;
+END_IF
+
+

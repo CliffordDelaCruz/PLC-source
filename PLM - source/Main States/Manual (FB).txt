@@ -1,0 +1,180 @@
+FUNCTION_BLOCK Manual // This will be used for when new material is feed into the machien for the first time
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	eManualStatus : ManualStatus;
+	ExitManualState : BOOL;
+END_VAR
+VAR
+	fbGanAbs	 	: MC_MoveAbsolute;
+	fbBldAbs 		: MC_MoveAbsolute;
+	fbActCtrl		: LLControl;
+	fbGanPosition	 	: MC_ReadActualPosition;
+	fbBldPosition 		: MC_ReadActualPosition;
+	fbCClampCtrl 	: CClampCtrl;
+	fbFClampCtrl 	: FClampCtrl;
+	fbBLClampCtrl 	: BLClampCtrl;
+	fbBTClampCtrl 	: BTClampCtrl;
+
+	bCClampExe : BOOL := FALSE;
+	bFClampExe : BOOL := FALSE;
+	bBLClampExe : BOOL := FALSE;
+	bBTClampExe : BOOL := FALSE;
+	BTClampDir  : ClampDirections;
+	BLClampDir  : ClampDirections;
+	CClampDir  : ClampDirections;
+	FClampDir  : ClampDirections;
+	
+	
+	gantryEnable	: BOOL := FALSE;
+	bladeEnable		: BOOL := FALSE;
+	actuatorEnable		: BOOL := FALSE;
+
+	bladeTarget : LREAL := -10;
+	actuatorTarget : LREAL := 250;
+	gantryTarget : LREAL := 20;
+
+	actuatorSpeed	: INT := 20;
+	gantrySpeed	: INT := 20;
+	bladeSpeed	: INT := 20;
+	
+//	actuatorPosition : LREAL;
+	actReset : BOOL := TRUE;
+
+END_VAR
+
+
+ExitManualState := FALSE; // Resets exit condition: this is common across all Main FB'
+//caseValue := HMI.gManualCmd;
+//actuatorPosition := ActuatorToMachinePos(nActuatorPos := ActuatorGVL.gActPos, nZeroPos := ActuatorGVL.nActuatorMaxPos );
+fbGanPosition(Axis := GantryX1, Enable := TRUE);
+fbBldPosition(Axis := BladeY1, Enable := TRUE);
+
+CASE HMI.gManualCmd OF
+//CASE caseValue OF
+	doNothing:
+		bBTClampExe := FALSE;
+		bBLClampExe := FALSE;
+		bCClampExe := FALSE;
+		bFClampExe := FALSE;
+		IF fbGanAbs.Done THEN
+			gantryEnable := FALSE;
+		END_IF
+		IF fbBldAbs.Done THEN
+			bladeEnable := FALSE;
+		END_IF
+		IF fbActCtrl.Done THEN
+			actuatorEnable := FALSE;
+		END_IF
+	backUpperClampUP:
+		BTClampDir := CLAMP_UP;
+		bBTClampExe := TRUE;
+	backUpperClampDown:
+		BTClampDir := CLAMP_DOWN;
+		bBTClampExe := TRUE;
+	backLowerClampUp:
+		BLClampDir := CLAMP_UP;
+		bBLClampExe := TRUE;
+	backLowerClampDown:
+		BLClampDir := CLAMP_DOWN;
+		bBLClampExe := TRUE;
+	cutterClampUp:
+		CClampDir := CLAMP_UP;
+		bCClampExe := TRUE;
+	cutterClampDown:
+		CClampDir := CLAMP_DOWN;
+		bCClampExe := TRUE;
+	frontClampUp:
+		FClampDir := CLAMP_UP;
+		bFClampExe := TRUE;
+	frontClampDown:
+		FClampDir := CLAMP_DOWN;
+		bFClampExe := TRUE;
+	moveGantryBack:
+		IF NOT fbGanAbs.Busy AND NOT gantryEnable THEN
+			IF fbGanPosition.Valid THEN
+				gantryTarget := constrainToLimits( fbGanPosition.Position - 1, GantryMin, GantryMax);
+				gantryEnable := TRUE;
+			END_IF
+		ELSIF fbGanAbs.Done THEN
+			gantryEnable := FALSE;
+		END_IF
+	moveGantryForward:
+		IF NOT fbGanAbs.Busy AND NOT gantryEnable THEN
+			IF fbGanPosition.Valid THEN
+				gantryTarget := constrainToLimits( fbGanPosition.Position + 1, GantryMin, GantryMax);
+				gantryEnable := TRUE;
+			END_IF
+		ELSIF fbGanAbs.Done THEN
+			gantryEnable := FALSE;
+		END_IF
+	moveGantryTo:
+		IF NOT fbGanAbs.Busy AND NOT gantryEnable THEN
+			IF fbGanPosition.Valid THEN
+				gantryTarget := constrainToLimits( HMI.HmiGantryTarget, GantryMin, GantryMax);
+				gantryEnable := TRUE;
+			END_IF
+		ELSIF fbGanAbs.Done THEN
+			gantryEnable := FALSE;
+		END_IF
+	moveBladeUp:
+		IF NOT fbBldAbs.Busy AND NOT bladeEnable THEN
+			IF fbBldPosition.Valid THEN
+				bladeTarget := constrainToLimits( fbBldPosition.Position - 1, BladeMin, BladeMax);
+				bladeEnable := TRUE;
+			END_IF
+		ELSIF fbBldAbs.Done THEN
+			bladeEnable := FALSE;
+		END_IF
+	moveBladeDown:
+		IF NOT fbBldAbs.Busy AND NOT bladeEnable THEN
+			IF fbBldPosition.Valid THEN
+				bladeTarget := constrainToLimits( fbBldPosition.Position + 1, BladeMin, BladeMax);
+				bladeEnable := TRUE;
+			END_IF
+		ELSIF fbBldAbs.Done THEN
+			bladeEnable := FALSE;
+		END_IF
+	moveBladeTo:
+		IF NOT fbBldAbs.Busy AND NOT bladeEnable THEN
+			IF fbBldPosition.Valid THEN
+				bladeTarget := constrainToLimits( HMI.HmiBladeTarget, BladeMin, BladeMax);
+				bladeEnable := TRUE;
+			END_IF
+		ELSIF fbBldAbs.Done THEN
+			bladeEnable := FALSE;
+		END_IF
+	moveActuatorBack:
+		IF NOT fbActCtrl.Busy AND NOT actuatorEnable THEN
+			actuatorTarget := constrainToLimits(fbActCtrl.getPosition - 5, ActuatorMin, ActuatorMax);
+			actuatorEnable := TRUE;
+		ELSIF fbActCtrl.Done THEN
+			actuatorEnable := FALSE;
+		END_IF
+	moveActuatorForward:
+		IF NOT fbActCtrl.Busy AND NOT actuatorEnable THEN
+			actuatorTarget := constrainToLimits(fbActCtrl.getPosition + 5, ActuatorMin, ActuatorMax);
+			actuatorEnable := TRUE;
+		ELSIF fbActCtrl.Done THEN
+			actuatorEnable := FALSE;
+		END_IF
+	moveActuatorTo:
+		IF NOT fbActCtrl.Busy AND NOT actuatorEnable THEN
+			actuatorTarget := constrainToLimits(HMI.HmiActuatorTarget, ActuatorMin, ActuatorMax);
+			actuatorEnable := TRUE;
+		ELSIF fbActCtrl.Done THEN
+			actuatorEnable := FALSE;
+		END_IF
+
+END_CASE
+
+// Clamp Move fb calls
+fbCClampCtrl(bExecute := bCClampExe, EDirection := CClampDir);
+fbFClampCtrl(bExecute := bFClampExe, EDirection := FClampDir);
+fbBLClampCtrl(bExecute := bBLClampExe, EDirection := BLClampDir);
+fbBTClampCtrl(bExecute := bBTClampExe, EDirection := BTClampDir);
+
+
+fbGanAbs(Axis := GantryX1, Execute := gantryEnable, Position := gantryTarget, Velocity := gantrySpeed);
+fbBldAbs(Axis := BladeY1, Execute := bladeEnable, Position := bladeTarget, Velocity := bladeSpeed);
+fbActCtrl(fTargetPosition := actuatorTarget, nTargetSpeed := actuatorSpeed, bMoveTrigger := actuatorEnable);

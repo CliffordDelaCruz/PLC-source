@@ -1,0 +1,445 @@
+FUNCTION_BLOCK Actuator_TEST_1
+VAR_INPUT
+    Enable : BOOL;
+END_VAR
+
+VAR_OUTPUT
+    Busy              : BOOL;
+    Done              : BOOL;
+    Fail              : BOOL;
+
+    Phase             : INT;
+    FailureReason     : INT;
+
+	
+    ActuatorPosition  : LREAL;
+    ActuatorSpeedCmd  : DINT;
+    ActuatorMove      : BOOL;
+
+    GantryErrorID     : UDINT;
+    BladeErrorID      : UDINT;
+	
+	GantryAborted     : BOOL;
+    BladeAborted      : BOOL;
+
+    StartTimeoutQ     : BOOL;
+    TestTimeoutQ      : BOOL;
+END_VAR
+
+VAR
+    lastEnable : BOOL := FALSE;
+
+    // Axis positioning FBs
+    fbGantryAbs : MC_MoveAbsolute;
+    fbBladeAbs  : MC_MoveAbsolute;
+
+    bGantryAbsExe : BOOL := FALSE;
+    bBladeAbsExe  : BOOL := FALSE;
+
+    // Actuator control
+    fbLLCtrl      : LLControl;
+    bLLMoveExe    : BOOL := FALSE;
+
+    LLTgtPos      : LREAL := 394.0;
+    LLTgtVel      : DINT := 20;
+
+    // Gantry and blade targets
+    GantryTgtPos  : LREAL := 0.0;
+    GantryTgtVel  : LREAL := 20.0;
+
+    BladeTgtPos   : LREAL := -10.0;
+    BladeTgtVel   : LREAL := 20.0;
+
+    // Timers
+    startPosTimeout : TON;
+    testTimeout     : TON;
+	delayTestTimer :TON;
+END_VAR
+
+
+// ============================================================
+// Rising edge: initialise a new test
+// ============================================================
+
+IF Enable AND NOT lastEnable THEN
+    Phase := 10;
+
+    Busy := TRUE;
+    Done := FALSE;
+    Fail := FALSE;
+
+    GantryErrorID := 0;
+    BladeErrorID := 0;
+
+    bGantryAbsExe := FALSE;
+    bBladeAbsExe := FALSE;
+    bLLMoveExe := FALSE;
+
+    LLTgtPos := 394.0;
+    LLTgtVel := 20;
+
+    startPosTimeout(IN := FALSE);
+    testTimeout(IN := FALSE);
+END_IF;
+
+
+// ============================================================
+// Removing Enable stops the actuator command
+// ============================================================
+
+IF NOT Enable THEN
+    bGantryAbsExe := FALSE;
+    bBladeAbsExe := FALSE;
+    bLLMoveExe := FALSE;
+
+    IF NOT Busy THEN
+        Phase := 0;
+    END_IF
+END_IF;
+
+
+// ============================================================
+// Test state machine
+// ============================================================
+
+CASE Phase OF
+
+    // --------------------------------------------------------
+    // Idle
+    // --------------------------------------------------------
+    0:
+        Busy := FALSE;
+        bGantryAbsExe := FALSE;
+        bBladeAbsExe := FALSE;
+        bLLMoveExe := FALSE;
+
+
+    // --------------------------------------------------------
+    // Prepare the initial positioning commands
+    //
+    // Blade:    -10
+    // Gantry:     0
+    // Actuator: 394
+    // --------------------------------------------------------
+    10:
+        IF NOT fbGantryAbs.Busy
+        AND NOT fbBladeAbs.Busy
+        AND NOT fbLLCtrl.Busy
+        THEN
+            GantryTgtPos := 0.5;
+            GantryTgtVel := 20.0;
+
+            BladeTgtPos := -10.0;
+            BladeTgtVel := 20.0;
+
+            LLTgtPos := 394.0;
+            LLTgtVel := 20;
+
+            bGantryAbsExe := TRUE;
+            bBladeAbsExe := TRUE;
+            bLLMoveExe := TRUE;
+
+            startPosTimeout(IN := FALSE);
+
+            Phase := 20;
+        ELSE
+            startPosTimeout(
+                IN := TRUE,
+                PT := T#10S
+            );
+
+            IF startPosTimeout.Q THEN
+                bGantryAbsExe := FALSE;
+                bBladeAbsExe := FALSE;
+                bLLMoveExe := FALSE;
+
+                Busy := FALSE;
+                Fail := TRUE;
+
+                Phase := 900;
+            END_IF
+        END_IF
+
+
+    // --------------------------------------------------------
+    // Wait for all three mechanisms to reach the start position
+    // --------------------------------------------------------
+    20:
+        startPosTimeout(
+            IN := TRUE,
+            PT := T#45S
+        );
+
+        IF fbGantryAbs.Error THEN
+            GantryErrorID := fbGantryAbs.ErrorID;
+
+            bGantryAbsExe := FALSE;
+            bBladeAbsExe := FALSE;
+            bLLMoveExe := FALSE;
+
+            Busy := FALSE;
+            Fail := TRUE;
+
+            startPosTimeout(IN := FALSE);
+
+            Phase := 900;
+
+        ELSIF fbBladeAbs.Error THEN
+            BladeErrorID := fbBladeAbs.ErrorID;
+
+            bGantryAbsExe := FALSE;
+            bBladeAbsExe := FALSE;
+            bLLMoveExe := FALSE;
+
+            Busy := FALSE;
+            Fail := TRUE;
+
+            startPosTimeout(IN := FALSE);
+
+            Phase := 900;
+
+        ELSIF fbGantryAbs.Done
+        AND fbBladeAbs.Done
+        AND fbLLCtrl.Done
+        THEN
+            // Release all three start-position Execute signals.
+            bGantryAbsExe := FALSE;
+            bBladeAbsExe := FALSE;
+            bLLMoveExe := FALSE;
+
+            startPosTimeout(IN := FALSE);
+
+            // Leave one complete scan with the commands false.
+            Phase := 30;
+
+        ELSIF startPosTimeout.Q THEN
+            bGantryAbsExe := FALSE;
+            bBladeAbsExe := FALSE;
+            bLLMoveExe := FALSE;
+
+            Busy := FALSE;
+            Fail := TRUE;
+
+            startPosTimeout(IN := FALSE);
+
+            Phase := 900;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // One complete scan between the positioning command and
+    // the actuator speed test
+    // --------------------------------------------------------
+    30:
+        Phase := 40;
+
+
+    // --------------------------------------------------------
+    // Start the actuator test
+    //
+    // The final actuator target remains 20 throughout the test.
+    // Only LLTgtVel changes.
+    // --------------------------------------------------------
+    40:
+        LLTgtPos := 20.0;
+        LLTgtVel := 20;
+        bLLMoveExe := TRUE;
+
+        testTimeout(IN := FALSE);
+
+        Phase := 50;
+
+
+    // --------------------------------------------------------
+    // From approximately 394 to 300:
+    // speed command = 20
+    // --------------------------------------------------------
+    50:
+        IF ActuatorPosition <= 300.0 THEN
+            LLTgtVel := 40;
+            Phase := 60;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // From 300 to 220:
+    // speed command = 40
+    // --------------------------------------------------------
+    60:
+        IF ActuatorPosition <= 220.0 THEN
+            LLTgtVel := 15;
+            Phase := 70;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // From 220 to 140:
+    // speed command = 15
+    // --------------------------------------------------------
+    70:
+        IF ActuatorPosition <= 140.0 THEN
+            LLTgtVel := 35;
+            Phase := 80;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // From 140 to 60:
+    // speed command = 35
+    // --------------------------------------------------------
+    80:
+        IF ActuatorPosition <= 60.0 THEN
+            LLTgtVel := 20;
+            Phase := 90;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // From 60 to final target 20:
+    // speed command = 20
+    //
+    // Let LLControl remove its command bit when its position
+    // tolerance reports Done.
+    // --------------------------------------------------------
+    90:
+        IF fbLLCtrl.Done THEN
+            bLLMoveExe := FALSE;
+            Phase := 100;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // Wait for the actuator to report that motion has stopped
+    // --------------------------------------------------------
+    100:
+        IF ActuatorGVL.gMotionFlag = 0 THEN
+            testTimeout(IN := FALSE);
+
+            Busy := FALSE;
+            Done := TRUE;
+
+            Phase := 110;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // Complete: wait for Enable to go false
+    // --------------------------------------------------------
+    110:
+        bLLMoveExe := FALSE;
+
+        IF NOT Enable THEN
+            Done := FALSE;
+            Phase := 0;
+        END_IF
+
+
+    // --------------------------------------------------------
+    // Failed or timed out
+    // --------------------------------------------------------
+    900:
+        bGantryAbsExe := FALSE;
+        bBladeAbsExe := FALSE;
+        bLLMoveExe := FALSE;
+
+        Busy := FALSE;
+        Fail := TRUE;
+
+END_CASE;
+
+
+// ============================================================
+// Actuator-test timeout
+//
+// Run from the moment the actuator test starts through to the
+// moment motion has stopped.
+// ============================================================
+
+testTimeout(
+    IN := (Phase >= 50) AND (Phase <= 100),
+    PT := T#60S
+);
+
+IF testTimeout.Q THEN
+    bLLMoveExe := FALSE;
+	FailureReason := 6;
+    Busy := FALSE;
+    Fail := TRUE;
+
+    testTimeout(IN := FALSE);
+
+    Phase := 900;
+END_IF;
+
+
+// ============================================================
+// Motion FB calls
+//
+// Each FB is called exactly once per PLC scan.
+// ============================================================
+
+fbGantryAbs(
+    Axis         := GantryX1,
+    Execute      := bGantryAbsExe,
+    Position     := GantryTgtPos,
+    Velocity     := GantryTgtVel,
+    Acceleration := 17.0,
+    Deceleration := 25.0,
+    Jerk         := 0.0,
+    BufferMode   := MC_Aborting
+);
+
+fbBladeAbs(
+    Axis         := BladeY1,
+    Execute      := bBladeAbsExe,
+    Position     := BladeTgtPos,
+    Velocity     := BladeTgtVel,
+    Acceleration := 17.0,
+    Deceleration := 25.0,
+    Jerk         := 0.0,
+    BufferMode   := MC_Aborting
+);
+
+
+// LLControl is deliberately called every PLC scan.
+//
+// During the speed test:
+//   fTargetPosition stays at 20
+//   bMoveTrigger stays TRUE
+//   nTargetSpeed changes at the selected positions
+fbLLCtrl(
+    fTargetPosition := LLTgtPos,
+    nTargetSpeed     := LLTgtVel,
+    bMoveTrigger     := bLLMoveExe
+);
+
+IF fbGantryAbs.Error THEN
+    FailureReason := 1;
+    GantryErrorID := fbGantryAbs.ErrorID;
+    // ...
+ELSIF fbBladeAbs.Error THEN
+    FailureReason := 2;
+    BladeErrorID := fbBladeAbs.ErrorID;
+    // ...
+ELSIF fbGantryAbs.CommandAborted THEN
+    FailureReason := 3;
+ELSIF fbBladeAbs.CommandAborted THEN
+    FailureReason := 4;
+ELSIF startPosTimeout.Q THEN
+    FailureReason := 5;
+END_IF
+
+// Diagnostic output assignments
+GantryAborted := fbGantryAbs.CommandAborted;
+BladeAborted := fbBladeAbs.CommandAborted;
+
+StartTimeoutQ := startPosTimeout.Q;
+TestTimeoutQ := testTimeout.Q;
+
+// Make useful internal values available as outputs.
+ActuatorPosition := fbLLCtrl.getPosition;
+ActuatorSpeedCmd := LLTgtVel;
+ActuatorMove := bLLMoveExe;
+
+// Rising-edge memory.
+lastEnable := Enable;

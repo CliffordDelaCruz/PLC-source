@@ -1,0 +1,17 @@
+FUNCTION_BLOCK Maintenance
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	eMaintenanceStatus : MaintenanceStatus;
+	ExitMaintenaceState : BOOL;
+END_VAR
+VAR
+END_VAR
+
+
+ExitMaintenaceState := FALSE; // Resets exit condition, this is common across all Main FB'
+
+
+// One of this this functions can be to check that the motors in particalar as still working well.
+// it could do this by running the full length of travel to its limit switches and checking is is the same size and when the machine was commisioned...
+// this will also be used to feed a new roll of material into the machine.

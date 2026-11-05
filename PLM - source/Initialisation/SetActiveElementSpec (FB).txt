@@ -1,0 +1,46 @@
+FUNCTION_BLOCK SetActiveElementSpec
+VAR_INPUT
+	Enable : BOOL;
+END_VAR
+VAR_OUTPUT
+	Done : BOOL;
+	Busy : BOOL;
+END_VAR
+VAR
+	nPhase : INT := 0;
+	lastEnable : BOOL;
+	tempElementSpec : ElementModuleSpec;
+END_VAR
+
+
+IF Enable AND NOT lastEnable THEN
+	nPhase := 0;
+	Done := FALSE;
+	Busy := FALSE;
+END_IF
+
+CASE nPhase OF
+	0: // Start sequence
+		IF Enable THEN
+			nPhase := 10;
+			Busy := TRUE;
+		END_IF
+	
+	10: // This retrives the element spec that is currently desired.
+		// Atm it just sets temp element spec to default element specs
+		// I have set this up in such a way that in the furture this phase could be used to find a given specification that is stored in an larger array
+		
+		tempElementSpec := DefaultElement.kDefualtElement;
+		nPhase := 20;
+	
+	20: // Sets the Active element 
+		ActiveElement.ActiveElement := tempElementSpec;
+		nPhase := 30;
+			
+	30: // Finished
+		Busy := FALSE;
+		Done := TRUE;
+END_CASE
+
+
+

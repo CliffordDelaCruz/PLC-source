@@ -1,0 +1,61 @@
+FUNCTION_BLOCK BTClampCtrl
+VAR_INPUT
+	bExecute 	: BOOL;
+	eDirection 	: ClampDirections;
+END_VAR
+VAR_OUTPUT
+	Done		: BOOL;
+	Busy		: BOOL;
+	MoveIssued	: BOOL;
+END_VAR
+VAR
+	bLastExecute : BOOL := FALSE;
+	ActuationTimer : TON;
+	startTimer : BOOL;
+END_VAR
+
+
+// Reseting all outputs every call
+IF NOT bExecute AND bLastExecute THEN 
+	Done		:= FALSE;
+	Busy		:= FALSE;
+	MoveIssued	:= FALSE;
+END_IF
+
+// Rising edge detection to trigger moving of coils in order to move pneumatic cylinders
+IF bExecute AND NOT bLastExecute THEN 
+	MoveIssued := TRUE; // Sets move issued to true
+	startTimer := TRUE;// Starts timer to allow time for actuation
+	// Changes corrisponding digital outputs to move pneumatic cylenders, in this case it is the Back Top clamp	
+	CASE eDirection OF
+		CLAMP_UP:
+			DigOutputs.Output3 := FALSE;
+			DigOutputs.Output4 := TRUE;
+		
+		CLAMP_DOWN: 
+			DigOutputs.Output4 := FALSE;
+			DigOutputs.Output3 := TRUE;
+	END_CASE
+END_IF
+
+// Gives busy stats if the cylender could still be moving
+IF ActuationTimer.ET <> T#0S AND NOT ActuationTimer.Q THEN
+	Busy := TRUE;
+END_IF
+
+// Sets all related digital outputs to false one the move has been completed. This is to avoid having the solinoids powered at all times.
+IF ActuationTimer.Q THEN 
+	DigOutputs.Output3 := FALSE;
+	DigOutputs.Output4 := FALSE;
+	startTimer := FALSE;
+	Busy		:= FALSE;
+	MoveIssued	:= FALSE;
+	Done := TRUE;
+END_IF
+
+// Timer To allow everthing to move before allowing issue of another cmd
+ActuationTimer(IN := startTimer, PT := T#1S);
+
+// Last execute cmd, for rising edge detection
+bLastExecute := bExecute;
+

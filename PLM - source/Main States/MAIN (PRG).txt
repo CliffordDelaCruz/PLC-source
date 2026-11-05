@@ -1,0 +1,175 @@
+PROGRAM MAIN
+VAR
+	bNewPowerOn 	: BOOL := TRUE; // Set when power is turned on and controller starts
+	bTrigger 	: BOOL := FALSE; // Is set by button or automaticaly for moving to next state
+	bIllegalStateChangeReuest 	: BOOL := FALSE;
+	bRequestStateDone 			: BOOL := FALSE;
+//	eRequestState		: MachineStates; has been moved to a global variable so STATE_READY doesn't need a case statement
+	n: INT := 0; // This is being used a a placedholder to allow testing
+	numberForTesting01: INT := 0;
+END_VAR
+VAR
+	eStartupResult      : StartupStatus;          
+	eInitialisingResult	: InitialisingStatus;     
+	eIdleResult         : IdleStatus;             
+	eReadyResult        : ReadyStatus;            
+	eRunningResult      : RunningStatus;         
+	ePausedResult       : PausedStatus;          
+	eManualResult       : ManualStatus;          
+	eMaintenanceResult  : MaintenanceStatus;     
+	eErrorResult        : ErrorHandlerStatus;  
+END_VAR
+VAR
+	fbStateMachine	: StateMachine;
+	fbStartup       : Startup;           
+	fbInitialising  : Initialising;      
+	fbIdle          : Idle;              
+	fbReady         : Ready;             
+	fbRunning       : Running;           
+	fbPaused        : Paused;            
+	fbManual        : Manual;            
+	fbShutdown      : Shutdown;          
+	fbMaintenance   : Maintenance;
+	fbTesting 		: Testing;
+	fbErrorHandler  : ErrorHandler;
+	fbCleanPowerUp 	: cleanPowerUp; 
+END_VAR
+
+
+// Sets current state to startup and sets last states on power on
+IF bNewPowerOn THEN
+	fbCleanPowerUp();
+	IF fbCleanPowerUp.Done THEN
+		fbStateMachine(eNewState := STATE_NULL , bTrigger := FALSE, bNewPowerOn := TRUE);
+		bNewPowerOn := FALSE;
+	END_IF
+	n := n + 1; //counter to see how many times this start bit has been gone through.
+END_IF
+
+numberForTesting01 := numberForTesting01 + 1; //counter to see how many times MAIN has been gone through.
+
+DigInputs.ButtonPress1(CLK := DigInputs.Input1);
+
+// This checks to see what state is active, depending on what state is active it will call the fb of the corresponding state, after the fb has run it will
+// check to see what status was returned, based on that it will set the next requested state, it will then check that the exit condition of the fb is met.
+// For some fb's this is automatic once it has finished and for others it needs human input.
+// Shutdown just calls the fb as it shuts the machine down.
+CASE eCurrentState OF
+	STATE_STARTUP: // This state is set and runs startup function on machine power on and allows initialisation if everything ok
+		fbStartup();
+		eStartupResult := fbStartup.eStartupStatus;
+		CASE eStartupResult OF
+			STARTUP_OK:		
+				eRequestState := STATE_INITIALISING;
+			STARTUP_ERROR:	
+				eRequestState := STATE_INITIALISING;
+			STARTUP_PAUSED: 
+				eRequestState := STATE_PAUSED;		
+			STARTUP_CRITICAL_ERROR:
+				eRequestState := STATE_ERROR;
+		END_CASE
+		bTrigger := fbStartup.ExitStartupState; // Sets trigger to true if exit conditions is met
+		
+	STATE_INITIALISING: // This state handle the initialsation and homing of all the axes
+		fbInitialising();
+		eInitialisingResult := fbInitialising.eInitialisingStatus;
+		CASE eInitialisingResult OF
+			INITIALISING_COMPLETE:
+				eRequestState := STATE_READY;
+			INITIALISING_FAILED:
+				eRequestState := STATE_ERROR;
+		END_CASE
+		bTrigger := fbInitialising.ExitInitialisingState;
+		
+	STATE_IDLE:
+		fbIdle();
+		eIdleResult := fbIdle.eIdleStatus;
+		CASE eIdleResult OF
+			IDLE_WAIT:
+				// Do Nothing
+			IDLE_ERROR:
+				eRequestState := STATE_ERROR;
+			IDLE_RETURN: // This returns the machine to the state it was in before it when into idle mode
+				eRequestState := eLastState;
+		END_CASE
+		bTrigger := fbIdle.ExitIdleState;
+		
+	STATE_READY: // This is the state before the main running state and after the initalisation, this state is designed for the machine to be able to sit here 
+				 // for a long time although given long enough it will move into the idle state
+		fbReady();
+		eReadyResult := fbReady.eReadyStatus;
+		CASE eReadyResult OF
+			READY_WAIT:
+				// Do nothing
+			READY_ERROR:
+				eRequestState := STATE_ERROR;
+			READY_START:
+				eRequestState := STATE_RUNNING;
+			READY_IDLE:
+				eRequestState := STATE_IDLE;
+			READY_SHUTDOWN:
+				eRequestState := STATE_SHUTDOWN;
+			READY_MAINTENANCE:
+				eRequestState := STATE_MAINTENANCE;
+			READY_MANUAL:
+				eRequestState := STATE_MANUAL;
+		END_CASE
+		bTrigger := fbReady.ExitReadyState;
+		
+	STATE_RUNNING:
+		fbRunning();
+		eRunningResult := fbRunning.eRunningStatus;
+		
+		CASE eRunningResult OF
+			RUN_PAUSED:
+				eRequestState := STATE_PAUSED;
+				
+		END_CASE
+		
+		bTrigger := fbRunning.ExitRunningState;
+		
+	STATE_PAUSED:
+		fbPaused();
+		ePausedResult := fbPaused.ePausedStatus;
+		IF ePausedResult = PAUSED_RESUME THEN //erik added
+			eRequestState := STATE_RUNNING;
+		END_IF
+		
+		bTrigger := fbPaused.ExitPausedState;
+		
+	STATE_MANUAL:
+		fbManual();
+		eManualResult := fbManual.eManualStatus;
+		
+		bTrigger := fbManual.ExitManualState;
+		
+	STATE_MAINTENANCE:
+		fbMaintenance();
+		eMaintenanceResult := fbMaintenance.eMaintenanceStatus;
+		
+		bTrigger := fbMaintenance.ExitMaintenaceState;
+		
+	STATE_ERROR:	
+		fbErrorHandler();
+		eErrorResult := fbErrorHandler.eErrorHandlerStutus;
+		
+		bTrigger := fbErrorHandler.ExitErrorState;
+		
+	STATE_SHUTDOWN:
+		fbShutdown();
+
+	STATE_TESTING:
+		fbTesting();
+
+END_CASE
+
+// Calls State Machine function which if required changes the machine state. It always calls with newPowerOn FALSE to avoid miss inputs
+fbStateMachine(eNewState := eRequestState , bTrigger := bTrigger, bNewPowerOn := FALSE);
+
+// Outputs for state machine
+bIllegalStateChangeReuest := fbStateMachine.bIllegalRequest;
+bRequestStateDone := fbStateMachine.bStateChanged;
+
+//Always sets trigger to false to handle automatic inputs
+bTrigger := FALSE; 
+

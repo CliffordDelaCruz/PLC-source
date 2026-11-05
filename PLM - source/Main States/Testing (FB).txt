@@ -1,0 +1,53 @@
+FUNCTION_BLOCK Testing
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+	fbMiddleFold : MiddleFold;
+	fbLoadMaterial : LoadMaterial;
+	fbLastFold : LastFold;
+	LoadMaterialExe: BOOL := FALSE;
+	MiddleFoldExe: BOOL := FALSE;
+	LastFoldExe: BOOL := FALSE;
+	mainState: INT;
+	testingMainState10Counter : INT := 0;
+	howManyTimesHasTestingBeenCalled : INT := 0;
+	testingMainState0Counter : INT := 0;
+
+END_VAR
+
+
+// This function is called in main and is meant for testing other FB's
+
+//fbMiddleFold(ElementSize := 150);
+// fbBladeTest();
+CASE mainState OF
+	0: // waits in this state for button to be pressed then calls fbLoadMaterial with bEnable := TRUE
+		testingMainState0Counter := testingMainState0Counter + 1;
+		IF DigInputs.ButtonPress1.Q THEN
+			MiddleFoldExe := TRUE;	
+//			LoadMaterialExe := TRUE;
+			mainState := 40;
+		END_IF
+	10: // waits in this state for fbLoadMaterial to finish, when it finishes, sets bEnable := FALSE so fbLoadMaterial gets reset.
+		testingMainState10Counter := testingMainState10Counter + 1;
+		IF fbLoadMaterial.Done THEN
+			LoadMaterialExe := FALSE;
+			mainState := 30;
+		END_IF
+	30:
+		MiddleFoldExe := TRUE;
+		mainState := 40;
+	40:
+		IF fbMiddleFold.Done THEN
+			MiddleFoldExe := FALSE;
+			mainState := 0;
+		END_IF
+		
+END_CASE
+
+howManyTimesHasTestingBeenCalled := howManyTimesHasTestingBeenCalled + 1;
+
+//fbLoadMaterial(FirstFoldHeight := 25, Enable := LoadMaterialExe);
+fbMiddleFold(ElementSize := 50, NumberOfElements := 3, Enable := MiddleFoldExe);

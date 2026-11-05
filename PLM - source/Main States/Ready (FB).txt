@@ -1,0 +1,136 @@
+FUNCTION_BLOCK Ready
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	eReadyStatus 		: ReadyStatus;
+	ExitReadyState 		: BOOL;
+END_VAR
+VAR
+	eReadyModeState		: ReadyModeStates;
+	fbStartPosition		: StartPosition;
+	ActiveSpec			: ElementModuleSpec;
+	ElementHeight		: LREAL := 1; // This has been set to one as it will ensure that if the active element GVL is empty there will not be an error
+END_VAR
+VAR
+	LastExitReadyState 	: BOOL := TRUE;
+	bGoToStart : BOOL := FALSE;
+END_VAR
+
+
+
+ExitReadyState:= FALSE; // Resets exit condition, this is common across all Main FB's
+
+// This sets the machine to go to start position ready mode state if the last call of this fb had the exit ready state as true.
+// This should mean that each time the machine enters this state from another state it will start in the same place.
+// The value is also set to true so that on each new startup it will also trigger this.
+IF lastExitReadyState THEN
+	eReadyModeState := READYSTATE_GOTOSTARTPOS;
+END_IF
+
+// The case selects the outcome based on the internal state of the main ready state
+CASE eReadyModeState OF
+	READYSTATE_GOTOSTARTPOS: // This state send the machine to the starting position for the currently active element spec
+		// Find the height to determine the start position, it will set 
+		IF	ActiveElement.ActiveElement.Height_mm = ElementHeight THEN
+			// Sends the machine to the start position
+			IF NOT fbStartPosition.Busy THEN 
+				bGoToStart := TRUE;
+			END_IF 
+			
+			IF fbStartPosition.Done THEN
+				bGoToStart := FALSE;
+				eReadyModeState := READYSTATE_WAIT;
+			ELSIF fbStartPosition.Fail THEN
+				eReadyModeState := READYSTATE_ERROR;
+				error.readyGoToStartError := TRUE;
+			END_IF
+	
+		ELSIF ActiveElement.ActiveElement.Height_mm >= MinElement.kMinElement.Height_mm AND ActiveElement.ActiveElement.Height_mm <= MaxElement.kMaxElement.Height_mm THEN
+			ElementHeight := ActiveElement.ActiveElement.Height_mm;
+		ELSE // If the active element is not valid the active element is automaically set to the default specs
+			ActiveElement.ActiveElement := DefaultElement.kDefaultElement;	
+		END_IF
+		
+		// Call for start position function	
+		fbStartPosition(Enable := bGoToStart, ElementHeight := ElementHeight);
+		
+	READYSTATE_WAIT: // This is temporary and just for while testing is being done, the intention will be for this to be activated bu the HMI
+		IF DigInputs.ButtonPress1.Q THEN
+			eRequestState := STATE_TESTING;
+//			eRequestState := STATE_MANUAL;
+			ExitReadyState := TRUE;
+		END_IF
+		
+	READYSTATE_UPDATESPEC: // This is currently unused and is intended for if the HMI needs a special way to update the active and or stored specifications
+		eReadyModeState := READYSTATE_WAIT;
+	
+	READYSTATE_ERROR: // This state prompt the main state machine that it should go to the main error state
+		// This checks that this has not been called twice in a row or the fb has not reset properly 
+		IF lastExitReadyState THEN
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := FALSE;
+		ELSE
+			eReadyStatus := READY_ERROR;
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := TRUE;
+		END_IF
+	
+	READYSTATE_START: // This state prompt the main state machine that it should go to the main running state
+		// This checks that this has not been called twice in a row or the fb has not reset properly 
+		IF lastExitReadyState THEN
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := FALSE;
+		ELSE
+			eReadyStatus := READY_START;
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := TRUE;
+		END_IF
+	
+	READYSTATE_IDLE: // This state prompt the main state machine that it should go to the main idle state
+		// This checks that this has not been called twice in a row or the fb has not reset properly 
+		IF lastExitReadyState THEN
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := FALSE;
+		ELSE
+			eReadyStatus := READY_IDLE;
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := TRUE;
+		END_IF
+	
+	READYSTATE_SHUTDOWN: // This state prompt the main state machine that it should go to the shutdown state
+		// This checks that this has not been called twice in a row or the fb has not reset properly 
+		IF lastExitReadyState THEN
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := FALSE;
+		ELSE
+			eReadyStatus :=READY_SHUTDOWN;
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := TRUE;
+		END_IF
+	
+	READYSTATE_MANUAL: // This state prompt the main state machine that it should go to the manual state
+		// This checks that this has not been called twice in a row or the fb has not reset properly 
+		IF lastExitReadyState THEN
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := FALSE;
+		ELSE
+			eReadyStatus :=READY_MANUAL;
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := TRUE;
+		END_IF
+	
+	READYSTATE_MAINTENANACE: // This state prompt the main state machine that it should go to the maintenance state
+		// This checks that this has not been called twice in a row or the fb has not reset properly 
+		IF lastExitReadyState THEN
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := FALSE;
+		ELSE
+			eReadyStatus := READY_MAINTENANCE;
+			eReadyModeState := READYSTATE_WAIT;
+			ExitReadyState := TRUE;
+		END_IF
+	
+END_CASE
+
+// Sets the last exit prompt to the current one, this is used to check that this fb gets reset when it is called
+lastExitReadyState := ExitReadyState;

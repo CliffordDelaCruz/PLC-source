@@ -1,0 +1,172 @@
+FUNCTION_BLOCK StartPosition
+VAR_INPUT
+	ElementHeight : LREAL;
+	Enable : BOOL;
+END_VAR
+VAR_OUTPUT
+	Done : BOOL;
+	Busy : BOOL;
+	Fail : BOOL;
+END_VAR
+VAR
+	nPhase : INT := 0;
+	lastEnable : BOOL;
+	bladeTgt : LREAL;
+	actTgt : LREAL;
+	gantryTgt : LREAL;
+END_VAR
+VAR
+	fbGanAbs	 	: MC_MoveAbsolute;
+	fbBldAbs 		: MC_MoveAbsolute;
+	fbActCtrl		: LLControl;
+	
+	GantryAbsExe	: BOOL;
+	BladeAbsExe		: BOOL;
+	LLCtrlExe		: BOOL;
+	
+	startPosTimeout : TON;
+END_VAR
+
+
+// Rising edge detection
+IF Enable AND NOT lastEnable THEN
+	nPhase := 0;
+	Done := FALSE;
+	Busy := FALSE;
+	Fail := FALSE;
+END_IF
+
+// Target starting positions calculated based on element height
+actTgt := 2*(ElementHeight + 1.5);
+gantryTgt := ElementHeight + 1.5;
+
+CASE nPhase OF 
+	0: // Start
+		IF Enable THEN 
+			nPhase := 10;
+			Busy := TRUE;
+		END_IF
+		
+	10: // Move Axis to start
+		IF NOT fbGanAbs.Busy AND NOT fbActCtrl.Busy AND NOT fbBldAbs.Busy THEN
+			GantryAbsExe := TRUE;
+			BladeAbsExe := TRUE;
+			LLCtrlExe := TRUE;
+			bladeTgt := -5;
+			startPosTimeout(IN := FALSE);
+			nPhase := 11;
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#10S);
+			IF startPosTimeout.Q THEN
+				GantryAbsExe := FALSE;
+				BladeAbsExe := FALSE;
+				LLCtrlExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	11: // Move Axis to start continued
+		IF fbGanAbs.Done AND fbActCtrl.Done AND fbBldAbs.Done THEN
+			GantryAbsExe := FALSE;
+			BladeAbsExe := FALSE;
+			LLCtrlExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := 20;
+		ELSIF fbGanAbs.Error AND fbBldAbs.Error THEN
+			GantryAbsExe := FALSE;
+			BladeAbsExe := FALSE;
+			LLCtrlExe := FALSE;
+			error.gantryMoveError := TRUE;
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbGanAbs.Error THEN
+			GantryAbsExe := FALSE;
+			BladeAbsExe := FALSE;
+			LLCtrlExe := FALSE;
+			error.gantryMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbBldAbs.Error THEN
+			GantryAbsExe := FALSE;
+			BladeAbsExe := FALSE;
+			LLCtrlExe := FALSE;
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;	 
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#20S);
+			IF startPosTimeout.Q THEN
+				GantryAbsExe := FALSE;
+				BladeAbsExe := FALSE;
+				LLCtrlExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	20: // Move blade down to 0 as to be contacting material to start.
+	IF NOT fbBldAbs.Busy THEN
+			BladeAbsExe := TRUE;
+			BladeTgt := 0;
+			startPosTimeout(IN := FALSE);
+			nPhase := 21;
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#10S);
+			IF startPosTimeout.Q THEN
+				GantryAbsExe := FALSE;
+				BladeAbsExe := FALSE;
+				LLCtrlExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	21: // Move blade down continued
+		IF fbBldAbs.Done THEN
+			BladeAbsExe := FALSE;
+			LLCtrlExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbBldAbs.Error THEN
+			GantryAbsExe := FALSE;
+			BladeAbsExe := FALSE;
+			LLCtrlExe := FALSE;
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;	 
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#15S);
+			IF startPosTimeout.Q THEN
+				GantryAbsExe := FALSE;
+				BladeAbsExe := FALSE;
+				LLCtrlExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	30: // Done
+		Busy := FALSE;
+		Fail := FALSE;
+		Done := TRUE;
+		
+END_CASE
+
+// fb call to move machine into start position
+IF NOT Done THEN 
+	fbGanAbs(Axis := GantryX1, Execute := GantryAbsExe, Position := gantryTgt, Velocity := 40);
+	fbActCtrl(fTargetPosition := actTgt , nTargetSpeed := 50, bMoveTrigger := LLCtrlExe);
+	fbBldAbs(Axis := BladeY1, Execute := BladeAbsExe, Position := bladeTgt, Velocity := 40);
+END_IF
+// Sets last enable for rising edge detection
+lastEnable := Enable;

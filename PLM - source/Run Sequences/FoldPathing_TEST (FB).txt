@@ -1,0 +1,133 @@
+FUNCTION_BLOCK FoldPathing_TEST
+VAR_INPUT
+	Execute : BOOL;
+	ElementHeight : LREAL;
+	Velocity : LREAL; // This is the velocity of the gantry but it effects the velocity of everything, 10 mm/s is defualt
+END_VAR
+VAR_OUTPUT
+	Done : BOOL;
+	Busy : BOOL;
+	Fail : BOOL;
+END_VAR
+VAR
+	lastExecute : BOOL;
+	xPos 		: LREAL;
+	xPosNext	: LREAL;
+	xPosLast 	: LREAL;
+	yPos		: LREAL;
+	yPosNext 	: LREAL;
+	yVel	 	: LREAL;
+	xVel 		: LREAL;
+	gantryVel 		: LREAL;
+	actVel 		: DINT;
+	
+	xVelMax 	: LREAL := 20.0;
+	yVelMax 	: LREAL := 50.0;
+	actVelMax 	: DINT := 40;
+	n			: INT := 10;
+	i			: INT := 0;
+	leadY         : BOOL := TRUE;     // Y leads when TRUE, X leads when FALSE
+	leadInit      : BOOL := FALSE;    // one-time initialization of leader mode
+	ratioHys      : LREAL := 0.10;    // hysteresis around 1.0 for ratio (10%)
+	epsX          : LREAL := 0.5;     // small threshold for |x| in machine units (e.g., mm)
+	epsY          : LREAL := 0.5;     // small threshold for |y| in machine units (e.g., mm)
+	actVelLREAL   : LREAL;            // computed actuator velocity (floating)
+	yVelCmdMag    : LREAL;            // desired max velocity (magnitude) for the leader axis
+	ratioXY       : LREAL;            // |x| / |y|
+	pathRadius        : LREAL;            // circle radius
+	y2            : LREAL;            // geometry terms
+
+	yPosTargetFromX: LREAL;
+	yError: LREAL;
+	yMeasured: LREAL;
+	yVelCorrection: LREAL;
+	yCorrectionGain: LREAL := 0.5;
+	yPosTargetFromXsquared: LREAL;
+	maxYVelCorrection: LREAL := 10;
+END_VAR
+
+VAR	
+	fbActControl	: LLControl;
+	fbMoveVelX		: MC_MoveVelocity;
+	fbMoveVelY		: MC_MoveVelocity;
+	LLCrtlExe	: BOOL := FALSE;
+	fbVelExeX	: BOOL := FALSE;
+	fbVelExeY 	: BOOL := FALSE;
+	stopX	: MC_Halt;
+	stopY	: MC_Halt;
+	stopXExe : BOOL := FALSE;
+	stopYExe : BOOL := FALSE;
+	stopped : BOOL := FALSE;
+END_VAR
+
+// Roughly speaking the max rpm of the stepper motors is 180. This means that the max xVel is around 225mm/s and the max yVel is 72mm/s. This max xVel is capped at 28 mm/s as the
+// max velocity of the actuator is 54 mm/s and during actuation the gantry velocity (xVel) must not exceed 54/2. This effectivly means that yVelMax is 72 mm/s and xVelMax is 28 mm/s.
+// This only realy applies during this function as no other functions required the same level of coordination.
+// Given a max element size of 200mm and a min size of 25mm then having the xVel at 28mm/s means it is 2 fast for everything but having it at 10mm/s will work for all sizes.
+// To reduced the chance of errors i have limited the max velocities to ~70% of there actual values.
+
+
+// this is only true on the second 
+IF NOT Execute AND lastExecute THEN
+	Done := FALSE;
+	Fail := FALSE;
+	stopped := FALSE;
+	n := 10;
+    leadInit := FALSE; // re-init leader at the start of a new run
+END_IF
+
+IF Execute THEN
+	Busy := TRUE;
+
+// desired max axis speed divided by 2 because the calcs are done on the gantry and blade and the actuator
+// will have to move twice the speed of the gantry    
+	yVelCmdMag := ABS(Velocity)/2;
+	
+	
+
+	gantryVel := LIMIT(0.0, gantryVel, xVelMax);
+
+	// Sets x velocity of actuator, the actuator has double the velocity of the gantry
+	actVel := LREAL_TO_DINT(gantryVel*2);
+
+
+	
+	// This part calls the move velocity fbs and the actuator control fb. It only calls them every 5 cycles to avoid errors that occur
+	// when updaeting these too frequently
+	IF n > 5  AND NOT stopped THEN
+		fbMoveVelX(Axis := GantryX1, Execute := TRUE, Velocity := gantryVel, Direction := MC_Negative_Direction, BufferMode := MC_Aborting, Acceleration := 17, Deceleration := 25);
+		fbMoveVelY(Axis := BladeY1, Execute := TRUE, Velocity := yVel, Direction := MC_Positive_Direction, BufferMode := MC_Aborting);
+		fbActControl(fTargetPosition := 3, nTargetSpeed := actVel, bMoveTrigger := TRUE);
+		n := 0;
+	END_IF
+	
+	// This stop the axis when it reaches its final destination this also calls the stop fb's (they are using MC_Halt, NOT MC_Stop) 
+	// with execute as false otherwise then rest of the machine stops moving after this step
+	IF (stopX.Execute OR stopY.Execute) AND i > 2 THEN
+		stopXExe := FALSE;
+		stopYExe := FALSE;
+		Done := TRUE;
+		Busy := FALSE;
+	ELSIF xPos < 5 AND NOT stopX.Execute AND NOT stopY.Execute THEN
+		stopXExe := TRUE;
+		stopYExe := TRUE;
+		fbActControl(bMoveTrigger := FALSE);
+		stopped := TRUE;
+		i := 0;
+	END_IF
+	
+	n := n + 1;
+	i := i + 1;
+	
+END_IF
+
+lastExecute := Execute;
+
+
+stopX(Axis := GantryX1, Execute := stopXExe);
+stopY(Axis := BladeY1, Execute := stopYExe);
+	
+// This calls the move velocity fb's with execute as false to ensure that the next call triggers correctly.
+fbMoveVelX(Axis := GantryX1, Execute := FALSE, Velocity := gantryVel, Direction := MC_Negative_Direction, BufferMode := MC_Aborting,
+	Acceleration := 17, Deceleration := 25);
+fbMoveVelY(Axis := BladeY1, Execute := FALSE, Velocity := yVel, Direction := MC_Positive_Direction, BufferMode := MC_Aborting);

@@ -1,0 +1,11 @@
+FUNCTION ActuatorToMachinePos : LREAL
+VAR_INPUT
+	nActuatorPos : DINT;
+	nZeroPos : DINT;
+END_VAR
+VAR
+	// fTemp : LREAL;
+END_VAR
+
+// This does the opposite of the coordinate converter
+ActuatorToMachinePos := (DINT_TO_LREAL(nZeroPos-nActuatorPos))/10;

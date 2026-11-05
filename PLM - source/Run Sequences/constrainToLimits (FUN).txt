@@ -1,0 +1,16 @@
+FUNCTION constrainToLimits : LREAL
+// returns x limited to [lo, hi]
+VAR_INPUT
+    x  : LREAL;
+    lo : LREAL;
+    hi : LREAL;
+END_VAR
+
+
+IF x < lo THEN
+    constrainToLimits := lo;
+ELSIF x > hi THEN
+    constrainToLimits := hi;
+ELSE
+    constrainToLimits := x;
+END_IF

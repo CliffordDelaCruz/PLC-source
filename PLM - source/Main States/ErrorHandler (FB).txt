@@ -1,0 +1,12 @@
+FUNCTION_BLOCK ErrorHandler
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	eErrorHandlerStutus : ErrorHandlerStatus;
+	ExitErrorState : BOOL;
+END_VAR
+VAR
+END_VAR
+
+
+ExitErrorState := FALSE; // Resets exit condition, this is common across all Main FB'

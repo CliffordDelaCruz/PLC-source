@@ -1,0 +1,37 @@
+FUNCTION_BLOCK Paused
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	ePausedStatus : PausedStatus;
+	ExitPausedState : BOOL;
+END_VAR
+VAR
+	HaltX1: MC_HALT;
+	HaltX2: MC_HALT;
+	HaltY1: MC_HALT;
+	HaltY2: MC_HALT;
+	HaltZ1: MC_HALT;
+	fbLLCtrl : LLControl;
+	fbButtonPressed : R_TRIG;
+		
+
+END_VAR
+
+
+ExitPausedState := FALSE; // Resets exit condition, this is common across all Main FB'
+
+// will use mc_halt not mc_stop.
+
+HaltX1(Axis := GantryX1, Execute := TRUE);
+//HaltX2(Axis := GantryX2, Execute := TRUE);  //erik commented out to see if it stops the error "Motion commands are not allowed on coupled axes"
+HaltY1(Axis := BladeY1, Execute := TRUE);
+//HaltY2(Axis := BladeY2, Execute := TRUE);  //erik commented out to see if it stops the error "Motion commands are not allowed on coupled axes"
+HaltZ1(Axis := CutterZ1, Execute := TRUE);
+fbLLCtrl(bMoveTrigger := FALSE);
+
+fbButtonPressed(CLK := DigInputs.Input1);
+//IF DigInputs.Input1 THEN // erik added these three lines. Not sure if they work so commenting out.
+IF fbButtonPressed.Q THEN // erik added these three lines. Not sure if they work so commenting out.
+	ePausedStatus := PAUSED_RESUME;
+	ExitPausedState := TRUE;
+END_IF

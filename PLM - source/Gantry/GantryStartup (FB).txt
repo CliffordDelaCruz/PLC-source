@@ -1,0 +1,375 @@
+FUNCTION_BLOCK GantryStartup
+VAR_INPUT
+	bEnable 	: BOOL;
+END_VAR
+VAR_OUTPUT
+	Done 	: BOOL;
+	Busy	: BOOL;
+	Fail	: BOOL;
+END_VAR
+VAR
+	bLastEnable     : BOOL := FALSE;	
+	bExePower 		: BOOL := FALSE;
+	bExeSetPos		: BOOL := FALSE;
+	bExeCouple		: BOOL := FALSE;
+	bExeDecouple	: BOOL := FALSE;
+	bExeHome		: BOOL := FALSE;
+	bExeCouplePos 	: BOOL := FALSE;
+	fReadPosition	: LREAL;
+	startupTimeout 	: TON;
+	nPhase 			: INT := 0;
+	homePosition	: LREAL := RetainedCtrlGVL.gantryHomePos + RetainedCtrlGVL.gantryHomePosOffset;
+	fbPowerX1		: MC_Power;
+	fbPowerX2		: MC_Power;
+	fbSetPosX1		: MC_SetPosition;
+	fbSetPosX2		: MC_SetPosition;
+	fbSetPosX2Match	: MC_SetPosition;
+	fbCoupleX		: MC_GearIn;
+	fbDecoupleX		: MC_GearOut;
+	fbReadPosX		: MC_ReadActualPosition;
+	fbHomeX			: MC_Home;	
+	fbStopX1		: MC_Stop;
+	fbStopX2		: MC_Stop;
+END_VAR
+
+
+// This FB does the startup for the gantry axis, it does both GantryX1 and GantryX2 
+
+// Resets the fb
+IF NOT bLastEnable AND bEnable THEN
+	Busy := FALSE;
+	Done := FALSE;
+	Fail := FALSE;
+	nPhase := 0;
+END_IF
+		
+CASE nPhase OF
+	0: // Wait for enable
+		IF bEnable THEN
+			nPhase := 10;
+			Busy := TRUE;
+		END_IF
+	
+	10: // Power on axis, this also check for someting taking to long
+		IF NOT fbPowerX1.Busy AND NOT fbPowerX2.Busy THEN
+			bExePower := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 11;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExePower := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	11: // Checks for power status to move allow moving to next step, also checks for erros and for timeouts
+		IF fbPowerX1.Status AND fbPowerX2.Status THEN
+			startupTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbPowerX1.Error AND fbPowerX2.Error THEN 
+			bExePower := FALSE;
+			error.gantryX1Error := TRUE;
+			error.gantryX2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSIF fbPowerX1.Error THEN
+			bExePower := FALSE;			
+			error.gantryX1Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbPowerX2.Error THEN
+		    bExePower := FALSE;
+		 	error.gantryX2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExePower := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+(*	20: // Sets position to zero on both axis as they are phycially link and having thwm try to line up if positions wrong could be bad, this also checks for something taking too long
+		IF NOT fbSetPosX1.Busy AND NOT fbSetPosX2.Busy THEN
+			bExeSetPos := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 21;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeSetPos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	21: // Checks for position set status to move to next step, also checks for errors and for timeouts
+		IF fbSetPosX1.Done AND fbSetPosX2.Done THEN
+			bExeSetPos := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbSetPosX1.Error AND fbSetPosX2.Error THEN 
+			bExeSetPos := FALSE;
+			error.gantryX1Error := TRUE;
+			error.gantryX2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSIF fbSetPosX1.Error THEN
+			bExeSetPos := FALSE;			
+			error.gantryX1Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbSetPosX2.Error THEN
+			bExeSetPos := FALSE;
+			error.gantryX2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeSetPos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF *)
+
+	30: // Couple axis, this also checks for something taking too long
+		IF NOT fbCoupleX.Busy THEN
+			bExeCouple := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 31;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	31: // Checks for couple status to allow moving to next step, also checks for errors and for timeouts
+		IF fbCoupleX.InGear THEN
+			bExeCouple := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 40;
+		ELSIF fbCoupleX.Error THEN 
+			bExeCouple := FALSE;
+			error.gantryCoupleError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#10S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	40: // Home axis, this also checks for something taking too long
+		IF NOT fbHomeX.Busy THEN
+			bExeHome := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 41;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeHome := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	41: // Checks for home status to allow moving to next step, also checks for errors and for timeouts
+		IF fbHomeX.Done THEN
+			bExeHome := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 80;
+		ELSIF fbHomeX.Error THEN 
+			//bExeHome := FALSE;
+			error.gantryHomeError := TRUE;	
+			startupTimeout(IN := FALSE);
+			Busy := FALSE;
+			Fail := TRUE;		
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#30S);
+			IF startupTimeout.Q THEN
+				bExeHome := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+(*	50: // Decouple axis, this also checks for something taking too long
+		IF NOT fbDecoupleX.Busy THEN
+			bExeDecouple := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 51;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeDecouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	51: // Checks for decouple status to allow moving to next step, also checks for errors and for timeouts
+		IF fbDecoupleX.Done THEN
+			bExeDecouple := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 60;
+		ELSIF fbDecoupleX.Error THEN 
+			bExeDecouple := FALSE;
+			error.gantryDecoupleError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeDecouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	60: // Sets X2 position to same as X1 after homing, this also checks for something taking too long
+		IF NOT fbSetPosX2.Busy THEN
+			bExeCouplePos := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 61;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouplePos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	61: // Checks for set position status to allow moving to next step, also checks for errors and for timeouts
+		IF fbSetPosX2Match.Done THEN
+			bExeCouplePos := FALSE;
+			fbReadPosX(Axis := GantryX1, Enable := FALSE);
+			startupTimeout(IN := FALSE);
+			nPhase := 70;
+		ELSIF fbSetPosX2.Error THEN 
+			bExeCouplePos := FALSE;
+			error.gantryX2Error := TRUE;	
+			Busy := FALSE;
+			Fail := TRUE;		
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#20S);
+			IF startupTimeout.Q THEN
+				bExeCouplePos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	70: // Couple axis, this also checks for something taking too long
+		IF NOT fbCoupleX.Busy THEN
+			bExeCouple := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 71;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	71: // Checks for couple status to allow moving to next step, also checks for errors and for timeouts
+		IF fbCoupleX.InGear THEN
+			bExeCouple := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 80;
+		ELSIF fbCoupleX.Error THEN 
+			bExeCouple := FALSE;
+			error.gantryCoupleError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#10S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.gantryStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF *)
+	
+	80: // The gantry motors have successfully started up and linked etc
+		Busy := FALSE;
+		Done := TRUE;
+		Fail := FALSE;
+					
+END_CASE
+
+// Power on fb calls
+fbPowerX1(Axis := GantryX1, Enable := bExePower, Enable_Positive := bExePower, Enable_Negative := bExePower, Override := 100);
+fbPowerX2(Axis := GantryX2, Enable := bExePower, Enable_Positive := bExePower, Enable_Negative := bExePower, Override := 100);
+
+// Set position fb calls
+(*IF bExeCouplePos THEN 
+	fbReadPosX(Axis := GantryX1, Enable := TRUE);
+	fReadPosition := fbReadPosX.Position;
+	fbSetPosX2Match(Axis := GantryX2, Execute := bExeCouplePos, Position := fReadPosition);
+ELSE
+	fbSetPosX2Match(Axis := GantryX2, Execute := bExeCouplePos, Position := fReadPosition);
+END_IF *)
+
+// Stops The motors if the startup fails, i unsure of why but the if statement is currently nessicary otherwise the it gets stuck on phase 71.
+IF Fail THEN
+	fbStopX1(Axis := GantryX1, Execute := Fail);
+	fbStopX2(Axis := GantryX2, Execute := Fail);
+END_IF 
+
+// Axis set position fb calls
+//fbSetPosX1(Axis := GantryX1, Execute := bExeSetPos, Position := homePosition);
+//fbSetPosX2(Axis := GantryX2, Execute := bExeSetPos, Position := homePosition);
+
+// Couple motor axes call
+fbCoupleX(Master := GantryX1, Slave := GantryX2, Execute := bExeCouple);
+
+// Decouple motor axes call
+//fbDecoupleX(Slave := GantryX2, Execute := bExeDecouple);
+
+// Home motor axes call
+fbHomeX(Axis := GantryX1, Execute := bExeHome, bCalibrationCam := NOT DigInputs.Input8);
+
+// Sets last enable trigger
+bLastEnable := bEnable;

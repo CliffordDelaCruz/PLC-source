@@ -1,0 +1,40 @@
+PROGRAM LLInOut
+VAR
+	cmdPos 		AT%Q*	: UINT;
+	cmdCurrent 	AT%Q*	: UINT;
+	cmdSpeed 	AT%Q*	: USINT;
+	cmdReserved AT%Q* 	: USINT;
+	cmdBit 		AT%Q*	: USINT;
+	
+	actPos		AT%I* 	: UINT;
+	actCurrent	AT%I*	: UINT;
+	actSpeed	AT%I*	: USINT;
+	motionFlag	AT%I*	: USINT;
+	errorFlag	AT%I*	: USINT;
+END_VAR
+
+
+// This program reads and writes from/to the Electrak actuator from/to the Actuator global varibles 
+// It also decodes errors and sets global error flags
+
+cmdPos 		:= DINT_TO_UINT(ActuatorGVL.gCmdPos);
+cmdCurrent 	:= DINT_TO_UINT(ActuatorGVL.gCmdCurrent);
+cmdSpeed 	:= DINT_TO_USINT(ActuatorGVL.gCmdSpeed);
+cmdReserved := BOOL_TO_USINT(ActuatorGVL.gCmdReserved);
+cmdBit		:= BOOL_TO_USINT(ActuatorGVL.gCmdBit);
+
+ActuatorGVL.gActPos 	:= UINT_TO_DINT(actPos);
+ActuatorGVL.gActCurrent := UINT_TO_DINT(actCurrent);
+ActuatorGVL.gActSpeed	:= USINT_TO_DINT(actSpeed);
+ActuatorGVL.gMotionFlag := USINT_TO_BYTE(motionFlag);
+ActuatorGVL.gErrorFlag 	:= USINT_TO_BYTE(errorFlag); // this gvl is not used it is just stored for debugging
+
+// This reads errorFlag bits and sets corrisponding error flags
+error.actuatorParameterError 	:= errorFlag.0;
+error.actuatorCurrentOverload	:= errorFlag.1;
+error.actuatorVoltageError		:= errorFlag.2;
+error.actuatorTemperatureError	:= errorFlag.3;
+error.actuatorBackdriveDetected	:= errorFlag.4;
+error.actuatorMessageTimeout	:= errorFlag.5;
+error.actuatorFatalError		:= errorFlag.6;
+error.actuatorMemoryError		:= errorFlag.7;

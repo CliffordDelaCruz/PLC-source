@@ -1,0 +1,57 @@
+FUNCTION_BLOCK FClampCtrl
+VAR_INPUT
+	bExecute 	: BOOL;
+	eDirection 	: ClampDirections;
+END_VAR
+VAR_OUTPUT
+	Done		: BOOL;
+	Busy		: BOOL;
+	MoveIssued	: BOOL;
+END_VAR
+VAR
+	bLastExecute : BOOL := FALSE;
+	ActuationTimer : TON;
+	startTimer : BOOL;
+END_VAR
+
+
+// Front Clamp Control
+
+// Reseting all outputs on falling edge (ie the first time it's called with bExecute : FALSE after bExecute : TRUE
+IF NOT bExecute AND bLastExecute THEN 
+	Done		:= FALSE;
+	Busy		:= FALSE;
+	MoveIssued	:= FALSE;
+END_IF
+
+// Rising edge detection to trigger moving of coils in order to move pneumatic cylinders
+IF bExecute AND NOT bLastExecute THEN 
+	MoveIssued := TRUE; // Sets move issued to true
+	startTimer := TRUE; // Starts timer to allow time for actuation
+	// Changes corrisponding digital outputs to move pneumatic cylenders, in this case it is the front clamp	
+	CASE eDirection OF
+		CLAMP_UP:
+			DigOutputs.Output6 := TRUE;
+		CLAMP_DOWN: 
+			DigOutputs.Output6 := FALSE;
+	END_CASE
+END_IF
+
+// Gives busy stats if the cylinder could still be moving
+IF ActuationTimer.ET <> T#0S AND NOT ActuationTimer.Q THEN
+	Busy := TRUE;
+END_IF
+
+// Resets Busy and MoveIssued flags
+IF ActuationTimer.Q THEN 
+	startTimer := FALSE;
+	Busy		:= FALSE;
+	MoveIssued	:= FALSE;
+	Done := TRUE;
+END_IF
+
+// Timer To allow everthing to move before allowing issue of another cmd
+ActuationTimer(IN := startTimer, PT := T#1S);
+
+// Last execute cmd, for edge detection
+bLastExecute := bExecute;

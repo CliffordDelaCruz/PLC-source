@@ -1,0 +1,97 @@
+FUNCTION_BLOCK StateMachine
+VAR_INPUT
+  	eNewState : MachineStates; // The requested new state
+  	bTrigger : BOOL;
+	bNewPowerOn : BOOL; // If new power on       
+END_VAR
+VAR_OUTPUT
+  	bIllegalRequest : BOOL := FALSE;
+	bStateChanged 	: BOOL := FALSE;
+END_VAR
+VAR
+  	bLastTrigger : BOOL := FALSE; 
+	bRepeatRequest : BOOL := TRUE;
+	bTransitionLegal : BOOL := FALSE;
+END_VAR
+
+
+// This sets the current start to startup and sets the last states when the machine is turned on, both cold and warm start.
+IF bNewPowerOn THEN
+	eSecondLastState 	:= eLastState;
+	eLastState		 	:= eCurrentState;
+	eCurrentState  	 	:= STATE_STARTUP;
+	RETURN;
+END_IF
+
+// Checks to see if the trigger was enabled and has rising edge
+IF bTrigger AND NOT bLastTrigger THEN 
+	bRepeatRequest := FALSE;
+    bLastTrigger := bTrigger;
+ELSE
+	bLastTrigger := bTrigger;
+	RETURN;
+END_IF
+
+// This checks to see if the state transition is legal and sets bTransitionLegal to true if change is good
+// All of the legal transitions are listed here
+IF NOT bRepeatRequest THEN
+	CASE eCurrentState OF
+		STATE_STARTUP:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_INITIALISING) 
+								OR (eNewState = STATE_PAUSED);
+		STATE_INITIALISING:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_READY); 
+		STATE_IDLE:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_READY) 
+								OR (eNewState = STATE_PAUSED);
+		STATE_READY:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_INITIALISING) 
+								OR (eNewState = STATE_RUNNING) 
+								OR (eNewState = STATE_TESTING) 
+								OR (eNewState = STATE_MANUAL); 
+		STATE_RUNNING:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_PAUSED) 
+								OR (eNewState = STATE_READY);
+		STATE_PAUSED:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_RUNNING); 
+		STATE_MANUAL:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_INITIALISING);
+								// OR (eNewState = STATE_PAUSED); Currently disabled as machine needs check post transition to ensure it does do randome things
+		STATE_SHUTDOWN:
+			//bTransitionLegal	:= (eNewState = STATE_NULL);				
+		STATE_MAINTENANCE:
+			bTransitionLegal	:= (eNewState = STATE_ERROR)
+								OR (eNewState = STATE_INITIALISING);
+		STATE_ERROR:	
+			bTransitionLegal	:= (eNewState = STATE_READY)
+								OR (eNewState = STATE_PAUSED);
+	END_CASE
+	bRepeatRequest := TRUE; // Resets the repeat request varible
+END_IF
+
+// Changes the states
+IF bTransitionLegal THEN // Changes the states if the change was legal
+	eSecondLastState 	:= eLastState;
+	eLastState		 	:= eCurrentState;
+	eCurrentState  	 	:= eNewState;
+	bStateChanged 		:= TRUE;
+	bIllegalRequest 	:= FALSE;
+	bTransitionLegal 	:= FALSE;
+
+ELSE // If the transition was illegal then
+	error.illegalNewStateRequest := TRUE;
+	eIllegalFromState 	:= eCurrentState;
+	eIllegalToState 	:= eNewstate;
+	eSecondLastState 	:= eLastState;
+	eLastState		 	:= eCurrentState;
+	eCurrentState  	 	:= STATE_ERROR;
+	bStateChanged 		:= FALSE;
+	bIllegalRequest     := TRUE;
+END_IF

@@ -1,0 +1,92 @@
+FUNCTION_BLOCK CleanPowerUp
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	Done: BOOL := FALSE;
+END_VAR
+VAR
+	fbStopX: MC_Stop;
+	fbStopY: MC_Stop;
+	fbStopZ: MC_Stop;
+	fbDecoupleX     : MC_GearOut;
+    fbDecoupleY     : MC_GearOut;
+	fbResetX1: MC_Reset;
+	fbResetX2: MC_Reset;
+	fbResetY1: MC_Reset;
+	fbResetY2: MC_Reset;
+	fbResetZ: MC_Reset;
+	fbPowerX1: MC_Power;
+	fbPowerX2: MC_Power;
+	fbPowerY1: MC_Power;
+	fbPowerY2: MC_Power;
+	fbPowerZ: MC_Power;
+	fbPowerCycleActuator: PowerCycleActuator;
+	nPhase: INT := 0;
+END_VAR
+
+
+Done := FALSE;
+// Called once on startup or when entering your INIT state
+// Assumes: you have MC function blocks instantiated per axis
+CASE nPhase OF
+	0:
+		// 1) Stop motion (non-aborting)
+		fbStopX(Axis := GantryX1, Execute := TRUE, Deceleration := 1000.0);
+		fbStopY(Axis := BladeY1,  Execute := TRUE, Deceleration := 1000.0);
+		fbStopZ(Axis := CutterZ1,  Execute := TRUE, Deceleration := 1000.0);
+		nPhase := 2;
+//	1: // stuff that Copilot suggested that doesn't seem to work
+//		IF fbStopX.Done AND fbStopY.Done AND fbStopZ.Done THEN
+//			fbStopX(Axis := GantryX1, Execute := FALSE, Deceleration := 1000.0);
+//			fbStopY(Axis := BladeY1,  Execute := FALSE, Deceleration := 1000.0);
+//			fbStopY(Axis := CutterZ1,  Execute := FALSE, Deceleration := 1000.0);
+//			nPhase := 2;
+//		END_IF
+	2:	
+		// 2) Uncouple (gear/cam out) for any axis that might be slaved
+		// Decouple motor axes call
+		fbDecoupleX(Slave := GantryX2, Execute := TRUE);
+		fbDecoupleY(Slave := BladeY2, Execute := TRUE);
+		
+		// 3) Reset NC errors
+		fbResetX1(Axis := GantryX1, Execute := TRUE);
+		fbResetX2(Axis := GantryX2, Execute := TRUE);
+		fbResetY1(Axis := BladeY1,  Execute := TRUE);
+		fbResetY2(Axis := BladeY2,  Execute := TRUE);
+		fbResetZ(Axis := CutterZ1,  Execute := TRUE);
+		nPhase := 4;
+//	3: // stuff that Copilot suggested that doesn't seem to work
+//		IF fbResetX1.Done AND fbResetX2.Done AND fbResetY1.Done AND fbResetY2.Done AND fbResetZ.Done THEN
+//			fbResetX1(Axis := GantryX1, Execute := FALSE);
+//			fbResetX2(Axis := GantryX2, Execute := FALSE);
+//			fbResetY1(Axis := BladeY1, Execute := FALSE);
+//			fbResetY2(Axis := BladeY2, Execute := FALSE);
+//			fbResetZ(Axis := CutterZ1, Execute := FALSE);
+//			nPhase := 4;
+//		END_IF;
+	4:
+		// 4) Optional: force power cycle at axis level (ensures consistent enable state)
+		fbPowerX1(Axis := GantryX1, Enable := FALSE);
+		fbPowerX2(Axis := GantryX2, Enable := FALSE);
+		fbPowerY1(Axis := BladeY1,  Enable := FALSE);
+		fbPowerY2(Axis := BladeY2,  Enable := FALSE);
+		fbPowerZ(Axis := CutterZ1,  Enable := FALSE);
+		nPhase := 5;
+	5:
+		IF NOT fbPowerX1.Status AND NOT fbPowerX2.Status AND NOT fbPowerY1.Status AND NOT fbPowerY2.Status AND NOT fbPowerZ.Status THEN
+			// Wait until all report Power = FALSE (Axis.Status.Power = FALSE), then:
+			fbPowerX1(Axis := GantryX1, Enable := TRUE);
+			fbPowerY1(Axis := BladeY1,  Enable := TRUE);
+			fbPowerX2(Axis := GantryX2, Enable := TRUE);
+			fbPowerY2(Axis := BladeY2,  Enable := TRUE);
+			fbPowerZ(Axis := CutterZ1,  Enable := TRUE);
+			nPhase := 6;
+		END_IF
+	6:
+		fbPowerCycleActuator(Enable := TRUE);
+		IF fbPowerCycleActuator.Done THEN
+			nPhase := 7;
+		END_IF
+	7:
+		Done := TRUE;
+END_CASE

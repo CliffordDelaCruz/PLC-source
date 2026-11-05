@@ -1,0 +1,60 @@
+FUNCTION_BLOCK PowerCycleActuator
+VAR_INPUT
+	Enable 	: BOOL;
+END_VAR
+VAR_OUTPUT
+	Done 	: BOOL;
+	Busy	: BOOL;
+	Fail 	: BOOL;
+END_VAR
+VAR
+	powerCycleTimer : TON;
+	cyclePwrExe	: BOOL := FALSE;
+	nPhase : INT := 0;
+	lastEnable : BOOL := FALSE;
+END_VAR
+
+
+// THis fb is for when certain errors are recived from the actuator, in this case the machine can automatically power cycle the actuator to hopefully clear the errors.
+IF Enable AND NOT lastEnable THEN
+	Done	:= FALSE;
+	Busy	:= FALSE;
+	Fail 	:= FALSE;
+	nPhase 	:= 0;
+END_IF
+
+CASE nPhase OF
+	0: // Wait for start
+		IF Enable THEN
+			Busy := TRUE;
+			nPhase := 10;
+		END_IF
+		
+	10: // Energises relay to power off actuator		
+		DigOutputs.Output7 := TRUE;
+		cyclePwrExe := TRUE;
+		nPhase := 20;
+		
+	20: // De-energise relay to allow actuator power to turn back on
+		IF powerCycleTimer.Q THEN
+			DigOutputs.Output7 := FALSE;
+			cyclePwrExe := FALSE;
+			nPhase := 30;
+		END_IF
+	
+	30: // Checks that actuator actually power back on/is powered on.
+		// For some reason this was not working and i have left it hear to be completed in the future
+		cyclePwrExe := TRUE;
+		IF powerCycleTimer.Q THEN
+			cyclePwrExe := FALSE;
+			nPhase := 40;
+		END_IF
+		
+	40: // Finish 
+		Busy := FALSE;
+		Done := TRUE;
+		
+END_CASE
+
+powerCycleTimer(IN := cyclePwrExe, PT := T#3S);
+lastEnable := Enable;

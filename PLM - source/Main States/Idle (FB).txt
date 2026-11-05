@@ -1,0 +1,58 @@
+FUNCTION_BLOCK Idle
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	eIdleStatus : IdleStatus;
+	ExitIdleState : BOOL;
+END_VAR
+VAR
+	initiateExit : BOOL := FALSE;
+	nPhase : INT := 0;
+	HMIinput : BOOL := FALSE;
+	holdTimer : TON;
+	HaltX1 : MC_Halt;
+	HaltX2 : MC_Halt;
+	HaltY1 : MC_Halt;
+	HaltY2 : MC_Halt;
+	HaltZ1 : MC_Halt;
+END_VAR
+
+
+ExitIdleState := FALSE; // Resets exit condition, this is common across all Main FB'
+
+CASE nPhase OF
+	0: // Halts all axis encase any of them are moving
+		HaltX1(Axis := GantryX1, Execute := TRUE);
+		HaltX2(Axis := GantryX2, Execute := TRUE); //erik commented out to see if it stops the error "Motion commands are not allowed on coupled axes"				
+		HaltY1(Axis := BladeY1, Execute := TRUE);
+		HaltY2(Axis := BladeY2, Execute := TRUE); //erik commented out to see if it stops the error "Motion commands are not allowed on coupled axes"
+		HaltZ1(Axis := CutterZ1, Execute := TRUE);
+	
+	10: // Hold in idle state, if input is given for 2 seconds on 
+		IF DigInputs.Input1 THEN 
+			initiateExit := TRUE;
+			IF holdTimer.Q THEN
+				initiateExit := FALSE;
+				nPhase := 20;
+			END_IF
+		ELSIF HMIinput THEN
+			nPhase := 20;
+		ELSE
+			initiateExit := FALSE;
+			eIdleStatus := IDLE_WAIT;
+		END_IF
+	
+	20: // Exit State and return to previos state
+		HaltX1(Axis := GantryX1, Execute := FALSE);
+		HaltX2(Axis := GantryX2, Execute := FALSE);
+		HaltY1(Axis := BladeY1, Execute := FALSE);
+		HaltY2(Axis := BladeY2, Execute := FALSE);
+		HaltZ1(Axis := CutterZ1, Execute := FALSE);
+		eIdleStatus := IDLE_RETURN;
+		ExitIdleState := TRUE;
+		nPhase := 0;
+	
+END_CASE
+
+// fb call for timer to ensure physical button is not accidentally tapped
+holdTimer(IN := initiateExit, PT := T#2S);

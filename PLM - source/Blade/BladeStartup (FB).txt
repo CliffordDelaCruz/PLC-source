@@ -1,0 +1,441 @@
+FUNCTION_BLOCK BladeStartup
+VAR_INPUT
+    bEnable     : BOOL;
+END_VAR
+VAR_OUTPUT
+    Done        : BOOL;
+    Busy        : BOOL;
+    Fail        : BOOL;
+END_VAR
+VAR
+	bLastEnable     : BOOL := FALSE;
+    bExePower       : BOOL := FALSE;
+    bExeSetPos      : BOOL := FALSE;
+    bExeCouple      : BOOL := FALSE;
+    bExeDecouple    : BOOL := FALSE;
+    bExeHome        : BOOL := FALSE;
+    bExeCouplePos   : BOOL := FALSE;
+	bExeBladeUp		: BOOL := FALSE;
+	bExeBladeDown	: BOOL := FALSE; // Tell blade to go down, down is positive!
+	bBladeDown		: BOOL := FALSE; // Blade was told to go down
+    fReadPosition   : LREAL;
+    startupTimeout  : TON;
+    nPhase          : INT := 0;
+	homePosition	: LREAL := RetainedCtrlGVL.bladeHomePos + RetainedCtrlGVL.bladeHomePosOffset;
+    fbPowerY1       : MC_Power;
+    fbPowerY2       : MC_Power;
+    fbSetPosY1      : MC_SetPosition;
+    fbSetPosY2      : MC_SetPosition;
+	fbSetPosY2Match : MC_SetPosition;
+    fbCoupleY       : MC_GearIn;
+    fbDecoupleY     : MC_GearOut;
+    fbReadPosY      : MC_ReadActualPosition;
+    fbHomeY         : MC_Home;
+	fbStopY1		: MC_Stop;
+	fbStopY2		: MC_Stop;
+	fbBladeUp 		: MC_MoveRelative;
+	fbBladeDown 	: MC_MoveRelative;
+END_VAR
+
+
+// This FB does the startup for the blade axis, it does both BladeY1 and BladeY2
+
+// Resets the fb
+IF NOT bLastEnable AND bEnable THEN
+	Busy := FALSE;
+	Done := FALSE;
+	Fail := FALSE;
+	nPhase := 0;
+END_IF
+		
+CASE nPhase OF
+	0: // Wait for enable
+		IF bEnable THEN
+			nPhase := 10;
+			Busy := TRUE;
+		END_IF
+	
+	10: // Power on axes, this also checks for something taking too long
+		IF NOT fbPowerY1.Busy AND NOT fbPowerY2.Busy THEN
+			bExePower := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 11;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExePower := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	11: // Checks for power status to allow moving to next step, also checks for errors and timeouts
+		IF fbPowerY1.Status AND fbPowerY2.Status THEN
+			startupTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbPowerY1.Error AND fbPowerY2.Error THEN 
+			bExePower := FALSE;
+			error.bladeY1Error := TRUE;
+			error.bladeY2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSIF fbPowerY1.Error THEN
+			bExePower := FALSE;			
+			error.bladeY1Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbPowerY2.Error THEN
+		    bExePower := FALSE;
+		 	error.bladeY2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExePower := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	(*20: // Sets position to zero on both axes as they are physically linked. This avoids misalignment if initial positions are offset. Also checks for timeout.
+		IF NOT fbSetPosY1.Busy AND NOT fbSetPosY2.Busy THEN
+			bExeSetPos := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 21;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeSetPos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	21: // Checks for position set status to move to next step, also checks for errors and for timeouts
+		IF fbSetPosY1.Done AND fbSetPosY2.Done THEN
+			bExeSetPos := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbSetPosY1.Error AND fbSetPosY2.Error THEN 
+			bExeSetPos := FALSE;
+			error.bladeY1Error := TRUE;
+			error.bladeY2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSIF fbSetPosY1.Error THEN
+			bExeSetPos := FALSE;			
+			error.bladeY1Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbSetPosY2.Error THEN
+			bExeSetPos := FALSE;
+			error.bladeY2Error := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeSetPos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF *)
+
+	30: // Couple axes, this also checks for something taking too long
+		IF NOT fbCoupleY.Busy THEN
+			bExeCouple := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 31;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	31: // Checks for couple status to allow moving to next step, also checks for errors and for timeouts
+		IF fbCoupleY.InGear THEN
+			bExeCouple := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 32;
+		ELSIF fbCoupleY.Error THEN 
+			bExeCouple := FALSE;
+			error.bladeCoupleError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#10S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	32: // Once the axes are coupled this checks that the blade is not at the bottom of the stroke, if so both both input 5 and 7 will be ture and the blade will raise up 50mm
+		IF NOT DigInputs.Input5 AND NOT DigInputs.Input7 AND NOT fbBladeUp.Busy THEN
+			bExeBladeUp := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 33;
+		ELSIF (NOT DigInputs.Input7 OR NOT DigInputs.Input5) AND NOT fbBladeDown.Busy THEN
+			bExeBladeDown := TRUE;
+			IF bBladeDown THEN
+				bExeBladeUp := FALSE;
+				bExeBladeDown := FALSE;
+				bBladeDown := FALSE;
+				startupTimeout(IN := FALSE);
+				nPhase := 40;
+			END_IF
+			bBladeDown := TRUE;
+			startupTimeout(IN := TRUE);
+		ELSIF fbBladeUp.Error THEN
+			bExeBladeDown := FALSE;
+			error.bladeHomeError := TRUE;	
+			Busy := FALSE;
+			Fail := TRUE;	
+		ELSIF DigInputs.Input7 AND DigInputs.Input5 AND NOT fbBladeUp.Busy THEN
+			bExeBladeUp := FALSE;
+			bExeBladeDown := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 40;
+		ELSE
+			startupTimeout(IN := TRUE, PT := T#10S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF			
+		END_IF
+		
+	33: // Waits for blade to move up
+		IF fbBladeUp.Done THEN
+			bExeBladeDown := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 40;
+		ELSIF fbBladeUp.Error THEN 
+			bExeBladeDown := FALSE;
+			error.bladeHomeError := TRUE;	
+			Busy := FALSE;
+			Fail := TRUE;	
+		ELSE
+			startupTimeout(IN := TRUE, PT := T#10S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF	
+		END_IF
+		
+	40: // Home BladeY1 axis, this also checks for something taking too long
+		IF NOT fbHomeY.Busy AND NOT fbBladeUp.Busy AND NOT fbBladeDown.Busy THEN
+			bExeHome := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 41;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeHome := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	41: // Checks for home status to allow moving to next step, also checks for errors and for timeouts
+		IF fbHomeY.Done THEN
+			bExeHome := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 80;
+		ELSIF fbHomeY.Error THEN 
+			//bExeHome := FALSE;
+			error.bladeHomeError := TRUE;	
+			Busy := FALSE;
+			Fail := TRUE;		
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#50S);
+			IF startupTimeout.Q THEN
+				//bExeHome := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+(*	50: // Decouple axes, this also checks for something taking too long
+		IF NOT fbDecoupleY.Busy THEN
+			bExeDecouple := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 51;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeDecouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	51: // Checks for decouple status to allow moving to next step, also checks for errors and for timeouts
+		IF fbDecoupleY.Done THEN
+			bExeDecouple := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 60;
+		ELSIF fbDecoupleY.Error THEN 
+			bExeDecouple := FALSE;
+			error.bladeDecoupleError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeDecouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	60: // Sets BladeY2 position to same as BladeY1 after homing, this also checks for something taking too long
+		IF NOT fbSetPosY2.Busy THEN
+			bExeCouplePos := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 61;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouplePos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	61: // Checks for set position status to allow moving to next step, also checks for errors and for timeouts
+		IF fbSetPosY2Match.Done THEN
+			bExeCouplePos := FALSE;
+			fbReadPosY(Axis := BladeY1, Enable := FALSE);
+			startupTimeout(IN := FALSE);
+			nPhase := 70;
+		ELSIF fbSetPosY2.Error THEN 
+			bExeCouplePos := FALSE;
+			error.bladeY2Error := TRUE;	
+			Busy := FALSE;
+			Fail := TRUE;		
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouplePos := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	70: // Couple axes, this also checks for something taking too long
+		IF NOT fbCoupleY.Busy THEN
+			bExeCouple := TRUE;
+			startupTimeout(IN := FALSE);
+			nPhase := 71;
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	71: // Checks for couple status to allow moving to next step, also checks for errors and for timeouts
+		IF fbCoupleY.InGear THEN
+			bExeCouple := FALSE;
+			startupTimeout(IN := FALSE);
+			nPhase := 80;
+		ELSIF fbCoupleY.Error THEN 
+			bExeCouple := FALSE;
+			error.bladeCoupleError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;			
+		ELSE	
+			startupTimeout(IN := TRUE, PT := T#5S);
+			IF startupTimeout.Q THEN
+				bExeCouple := FALSE;
+				startupTimeout(IN := FALSE);
+				error.bladeStartupTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF *)
+	
+	80: // The blade axes have successfully started up and linked
+		Busy := FALSE;
+		Done := TRUE;
+		Fail := FALSE;
+					
+END_CASE
+
+// Power on fb calls
+fbPowerY1(Axis := BladeY1, Enable := bExePower, Enable_Positive := bExePower, Enable_Negative := bExePower, Override := 100);
+fbPowerY2(Axis := BladeY2, Enable := bExePower, Enable_Positive := bExePower, Enable_Negative := bExePower, Override := 100);
+
+// Set position fb calls
+IF bExeCouplePos THEN 
+	fbReadPosY(Axis := BladeY1, Enable := TRUE);
+	fReadPosition := fbReadPosY.Position;
+	fbSetPosY2Match(Axis := BladeY2, Execute := bExeCouplePos, Position := fReadPosition);
+ELSE
+	fbSetPosY2Match(Axis := BladeY2, Execute := bExeCouplePos, Position := fReadPosition);
+END_IF
+
+// Stops The motors if the startup fails
+IF Fail THEN
+	fbStopY1(Axis := BladeY1, Execute := Fail);
+	fbStopY2(Axis := BladeY1, Execute := Fail);
+END_IF
+ 
+// Axis set position fb calls
+fbSetPosY1(Axis := BladeY1, Execute := bExeSetPos, Position := homePosition);
+fbSetPosY2(Axis := BladeY2, Execute := bExeSetPos, Position := homePosition);
+
+// Couple motor axes call
+fbCoupleY(Master := BladeY1, Slave := BladeY2, Execute := bExeCouple);
+
+// Decouple motor axes call
+fbDecoupleY(Slave := BladeY2, Execute := bExeDecouple);
+
+// Raises blade up when it starts at bottom of stroke
+fbBladeUp(Axis := BladeY1, Execute := bExeBladeUp, Distance := -50.0, Velocity := 10.0);
+fbBladeDown(Axis := BladeY1, Execute := bExeBladeDown, Distance := 5.0, Velocity := 5.0);
+
+// Home motor axis call
+fbHomeY(Axis := BladeY1, Execute := bExeHome, bCalibrationCam := NOT DigInputs.Input7);
+
+// Sets last enable trigger
+bLastEnable := bEnable;

@@ -1,0 +1,131 @@
+FUNCTION_BLOCK LLControl
+VAR_INPUT
+	fTargetPosition	: LREAL; 
+	nTargetSpeed 	: DINT;
+	bMoveTrigger	: BOOL;
+END_VAR
+VAR_OUTPUT
+	Done		: BOOL;
+	Busy		: BOOL;
+	MoveIssued	: BOOL;
+	getPosition : LREAL;
+END_VAR
+VAR
+	nTargetPos	: DINT;
+	nMaxSpeed 	: DINT := 54;
+	nMinSpeed 	: DINT := 11;
+	nMaxPos		: DINT := ActuatorGVL.nActuatorMaxPos;
+	nMinPos		: DINT := 0;
+	nMaxCurrent	: DINT := 130; // Machine can be set to 150, but not nessacry for us hence 130
+	nMinCurrent : DINT := 30; // This has been adjusted to allow minium amount of movement, this might need to be chnaged in the furture
+	bSkipFB		: BOOL := FALSE; // Used if invalid position is requested
+	nCmdPos		: DINT; // These varibles are what are used to write to the actuator gvl
+	nCmdSpeed	: DINT; // ''
+	nCmdCurrent	: DINT; // ''
+	nCmdBit		: BOOL; // '' 
+	nDeltaPos	: DINT;
+	nTolerance          : INT := 10;       // Normal "done" tolerance
+	nOvershootTrigger   : INT := 15;      // If less than this but not in tolerance, consider actuator stuck
+	nOvershootAmount    : INT := 5;      // Add this to help reach target
+	nLastMotionFlag		: BYTE;
+END_VAR
+
+// Resets the outputs for the fb
+Done		:= FALSE;
+Busy		:= FALSE;
+MoveIssued 	:= FALSE;
+
+nTargetPos := MachineToActuatorPos(fMMPos := fTargetPosition, nZeroPos := nMaxPos);
+
+// Checks to see if speed target is within bounds and sets them within and flags an error if not. Will still allow actuator to move
+IF nTargetSpeed > nMaxSpeed THEN
+    nTargetSpeed := nMaxSpeed;
+	error.actuatorInvalidSpeed := TRUE;
+ELSIF nTargetSpeed < nMinSpeed THEN
+    nTargetSpeed := nMinSpeed;
+	error.actuatorInvalidSpeed := TRUE;
+ELSE
+	error.actuatorInvalidSpeed := FALSE;
+END_IF
+
+// Checks to see if target position is within limits and flags error (DOES NOT CORRECT TO WITHIN LIMIT)
+IF (nTargetPos > nMaxPos) OR (nTargetPos < nMinPos) THEN
+    error.actuatorInvaildPos := TRUE;
+	bSkipFB := TRUE;
+ELSE
+    error.actuatorInvaildPos := FALSE;
+	bSkipFB := FALSE;
+END_IF
+
+// This wakes/keeps the actuator awake if it is asleep this should never be needed but just in case.
+IF error.actuatorMessageTimeout THEN
+	ActuatorGVL.gCmdReserved := NOT ActuatorGVL.gCmdReserved;
+END_IF
+
+
+// This skips if position was invalid 
+IF NOT bSkipFB THEN
+	// Sets the current and speed for the movement and checks for slow mode enabled if slow mode is enabled it limits current and speed
+	IF slowMode THEN
+		nCmdSpeed 	:= nMinSpeed;
+		nCmdCurrent := nMinCurrent;
+	ELSE 
+		nCmdSpeed 	:= nTargetSpeed;
+		nCmdCurrent := nMaxCurrent;
+	END_IF
+	
+	// Sets target position 
+	nCmdPos := nTargetPos;
+	
+	// Calculates distance to target
+	nDeltaPos := ABS(ActuatorGVL.gActPos - nCmdPos);
+		
+	// This checks that the actuator does get within a ceratin amount of the requested value, sometimes the actuator will stop 1mm or 10 from the target, in that case 
+	// This will pick that up and request the target be moved to get the actuator the hole way to the target
+	// It will only do this if it is with a certain range from the carget and it was moving and is no longer moving
+	// It also checks that values are not set outside of the allowable range
+	IF nDeltaPos > nTolerance AND nDeltaPos < nOverShootTrigger AND nLastMotionFlag <> 0 AND ActuatorGVL.gMotionFlag = 0 THEN
+		IF nTargetPos > ActuatorGVL.gActPos THEN // If it undershoots
+			nCmdPos := nTargetPos + nOvershootAmount;
+			IF nCmdPos > nMaxPos THEN
+				nCmdPos := nMaxPos;
+			END_IF
+		ELSE
+			nCmdPos := nTargetPos - nOvershootAmount;
+			IF nCmdPos < nMinPos THEN
+				nCmdPos := nMinPos;
+			END_IF
+		END_IF
+	END_IF
+	
+	// Keeps the last motion flag for above check
+	nLastMotionFlag := ActuatorGVL.gMotionFlag;
+	
+	// If a new move was requested this will set the Control bit to true to allow movement
+	IF bMoveTrigger THEN 
+		nCmdBit := TRUE;
+		MoveIssued := TRUE;
+	ELSIF NOT bMoveTrigger THEN
+		nCmdBit := FALSE;
+	END_IF
+	
+	// This confirms that the actuator is at its target and sets the control bit to false/0 and sets the dont output 
+	IF nDeltaPos <= nTolerance THEN
+		Done := TRUE;
+		nCmdBit := FALSE; 
+	END_IF
+
+	// If actuator is moving it raises the busy flag
+	IF ActuatorGVL.gMotionFlag <> 0 OR MoveIssued = TRUE THEN
+		Busy := TRUE;
+	END_IF
+	
+	// Writes to the global actuator varibles which will write to the actuator on following cycle via LLInOut
+	ActuatorGVL.gCmdPos 	:= nCmdPos;
+	ActuatorGVL.gCmdCurrent := nCmdCurrent;
+	ActuatorGVL.gCmdSpeed 	:= nCmdSpeed;
+	ActuatorGVL.gCmdBit		:= nCmdBit;
+	
+END_IF
+
+ getPosition := ActuatorToMachinePos(nActuatorPos := ActuatorGVL.gActPos, nZeroPos := ActuatorGVL.nActuatorMaxPos );

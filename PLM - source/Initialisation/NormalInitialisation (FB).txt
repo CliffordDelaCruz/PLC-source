@@ -1,0 +1,209 @@
+FUNCTION_BLOCK NormalInitialisation // This handles the initialisation and homing of the machine under normal sitiuations
+VAR_INPUT
+	bEnable : BOOL;
+END_VAR
+VAR_OUTPUT
+	Done 	: BOOL;
+	Busy	: BOOL;
+	Fail	: BOOL;
+END_VAR
+VAR
+	bLastEnable : BOOL 	:= FALSE;
+	nPhase 				: INT := 0;
+	iniTimeout 			: TON;
+	fbLLControl 		: LLControl;
+	fbMoveGantry	 	: MC_MoveAbsolute;
+	fbGantryStartup 	: GantryStartup;
+	fbBladeStartup 		: BladeStartup;
+	fbCutterStartup 	: CutterStartup;
+	fbBLClampCtrl		: BLClampCtrl;
+	fbBTClampCtrl		: BTClampCtrl;
+	fbFClampCtrl		: FClampCtrl;
+	fbCClampCtrl		: CClampCtrl;
+END_VAR
+VAR
+	bBLClampExe			: BOOL := FALSE;
+	bBTClampExe			: BOOL := FALSE;
+	bFClampExe			: BOOL := FALSE;
+	bCClampExe			: BOOL := FALSE;
+	bExeMotorStartup 	: BOOL := FALSE;
+END_VAR
+
+
+// ------------------------------------------- Normal initialisation ------------------------------------------
+// Step 1: Release cutter clamp
+// Step 2: home all axes, gantry + actuator + blade + cutter
+// Step 3: Retract all clamps
+
+// resets fb on rising edge
+IF NOT bLastEnable AND bEnable THEN
+	Busy := FALSE;
+	Done := FALSE;
+	Fail := FALSE;
+	nPhase := 0;
+END_IF
+
+CASE nPhase OF
+	0: // Wait for enable
+		IF bEnable THEN
+			nPhase := 10;
+			Busy := TRUE;
+		END_IF
+		
+	10: // Release Front Clamp, also checks for taking too long
+		IF NOT fbFClampCtrl.Busy THEN
+			bFClampExe := TRUE;
+			iniTimeout(IN := FALSE);
+			nPhase := 11;
+		ELSE	
+			iniTimeout(IN := TRUE, PT := T#5S);
+			IF iniTimeout.Q THEN
+				bFClampExe := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	11: // Release front clamp continued, also checks for taking too long
+		IF fbFClampCtrl.Done THEN
+			bFClampExe := FALSE;
+			nPhase := 15;
+		ELSE 
+			iniTimeout(IN := TRUE, PT := T#5S);
+			IF iniTimeout.Q THEN
+				bFClampExe := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	15: // Release Cutter Clamp, also checks for taking too long
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			iniTimeout(IN := FALSE);
+			nPhase := 16;
+		ELSE	
+			iniTimeout(IN := TRUE, PT := T#5S);
+			IF iniTimeout.Q THEN
+				bCClampExe := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	16: // Release Cutter clamp continued, also checks for taking too long
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			nPhase := 20;
+		ELSE 
+			iniTimeout(IN := TRUE, PT := T#5S);
+			IF iniTimeout.Q THEN
+				bCClampExe := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	20: // This phase starts the homing of all of the main axis
+		IF NOT fbGantryStartup.Busy AND NOT fbBladeStartup.Busy AND NOT fbCutterStartup.Busy AND NOT fbLLControl.Busy THEN
+			bExeMotorStartup := TRUE;
+			iniTimeout(IN := FALSE);
+			nPhase := 21;
+		ELSE
+			iniTimeout(IN := TRUE, PT := T#5S);
+			IF iniTimeout.Q THEN
+				bExeMotorStartup := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	21: // This phase completes when the motor and actuator homeing is completed
+		IF fbGantryStartup.Done AND fbBladeStartup.Done AND fbCutterStartup.Done AND fbLLControl.Done THEN
+			bExeMotorStartup := FALSE;
+			iniTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbGantryStartup.Fail OR fbBladeStartup.Fail OR fbCutterStartup.Fail THEN 
+			bExeMotorStartup := FALSE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE
+			iniTimeout(IN := TRUE, PT := T#60S);
+			IF iniTimeout.Q THEN
+				bExeMotorStartup := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	30: // Retract Back Clamps
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			bBTClampExe := TRUE;
+			iniTimeout(IN := FALSE);
+			nPhase := 31;
+		ELSE	
+			iniTimeout(IN := TRUE, PT := T#5S);
+			IF iniTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	31: // Retract back clamps continued
+ 		IF fbBLClampCtrl.Done AND fbBTClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bBTClampExe := FALSE;
+			iniTimeout(IN := FALSE);
+			nPhase := 80;
+		ELSE 
+			iniTimeout(IN := TRUE, PT := T#50S);
+			IF iniTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				iniTimeout(IN := FALSE);
+				error.normIniTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	80: // The normal initialisation has successfully completed
+		Busy := FALSE;
+		Done := TRUE;
+		Fail := FALSE;
+END_CASE
+
+// Sets the actuator position to full retract. 9999 is a shortcut for setting the position to full retacted, this is to allow the actuator to home properly
+// postion 9999 is converted to actuator position of zero in machine to actuator position fb
+fbLLControl(fTargetPosition := 9999, nTargetSpeed := 30, bMoveTrigger := bExeMotorStartup);
+
+// Motor Startup calls
+fbGantryStartup(bEnable := bExeMotorStartup);
+fbBladeStartup(bEnable := bExeMotorStartup);
+fbCutterStartup(bEnable := bExeMotorStartup);
+
+// Clamp fb calls, specifically all of these retract the clamps
+fbFClampCtrl(bExecute := bFClampExe, eDirection := CLAMP_UP);
+fbCClampCtrl(bExecute := bCClampExe, eDirection := CLAMP_UP);
+fbBLClampCtrl(bExecute := bBLClampExe, eDirection := CLAMP_DOWN);
+fbBTClampCtrl(bExecute := bBTClampExe, eDirection := CLAMP_UP);
+
+// Rising edge detection
+bLastEnable := bEnable;

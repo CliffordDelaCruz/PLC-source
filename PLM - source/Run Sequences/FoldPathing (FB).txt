@@ -1,0 +1,1006 @@
+FUNCTION_BLOCK FoldPathing
+VAR_INPUT
+    Execute : BOOL;
+    Abort   : BOOL := FALSE;
+
+    // Radius of the circular folding path.
+    // The gantry should start at this position.
+    ElementHeight : LREAL;
+
+    // Nominal blade-tip speed along the circular path.
+    // Start conservatively, for example 5 to 10 mm/s.
+    Velocity : LREAL := 10.0;
+
+
+    // --------------------------------------------------------
+    // Machine geometry
+    // --------------------------------------------------------
+
+    BladeThickness : LREAL := 3.0;
+
+    // Final actuator machine-coordinate target.
+    ActuatorEndPosition : LREAL := 3.7;
+
+    // Allows the calculated blade target to be adjusted
+    // slightly deeper or shallower near the end.
+    BladeEndOffset : LREAL := 0.0;
+
+
+    // --------------------------------------------------------
+    // Path correction
+    // --------------------------------------------------------
+
+    // Corrects blade vertical velocity according to its
+    // distance from the desired arc.
+    BladeCorrectionGain : LREAL := 0.5;
+
+    MaxBladeCorrection : LREAL := 10.0;
+
+
+    // Corrects the gantry velocity according to whether the
+    // gantry is centred between the fixed stop and actuator.
+    GantrySyncGain : LREAL := 0.5;
+
+    MaxGantryCorrection : LREAL := 8.0;
+
+
+    // Maximum permitted actuator-space centring error before
+    // performing a controlled stop.
+    //
+    // Gantry-space error is half this value because the
+    // actuator moves twice the gantry distance.
+    MaxSyncError : LREAL := 30.0;
+
+
+    // Converts the Electrak speed command into an estimated
+    // matching gantry velocity.
+    //
+    // The theoretical value is 0.5 because the actuator should
+    // move twice as fast as the gantry.
+    //
+    // Increase slightly if the actuator still moves ahead.
+    // Decrease slightly if the gantry moves ahead.
+    ActuatorToGantryVelocityRatio : LREAL := 0.52;
+
+
+    // --------------------------------------------------------
+    // Motion limits
+    // --------------------------------------------------------
+
+    GantryVelocityMax : LREAL := 20.0;
+    BladeVelocityMax  : LREAL := 50.0;
+
+    GantryAcceleration : LREAL := 100.0;
+    GantryDeceleration : LREAL := 100.0;
+    GantryJerk         : LREAL := 225.0;
+
+    BladeAcceleration : LREAL := 1500.0;
+    BladeDeceleration : LREAL := 1500.0;
+    BladeJerk         : LREAL := 2250.0;
+
+
+    // Electrak LLControl command range.
+    ActuatorSpeedMin : DINT := 11;
+    ActuatorSpeedMax : DINT := 54;
+
+
+    // Number of PLC scans between new velocity commands.
+    // At a 10 ms PLC task, 5 scans = 50 ms.
+    UpdateEveryNCycles : UINT := 5;
+
+
+    // Extra allowance added to calculated gantry stopping
+    // distance.
+    GantryStopMargin : LREAL := 1.0;
+END_VAR
+
+
+VAR_OUTPUT
+    Done : BOOL;
+    Busy : BOOL;
+    Fail : BOOL;
+
+    State   : INT;
+    ErrorID : UDINT;
+
+    GantryPosition   : LREAL;
+    BladePosition    : LREAL;
+    ActuatorPosition : LREAL;
+
+    BladeTargetPosition : LREAL;
+
+    GantryVelocityCommand : LREAL;
+    BladeVelocityCommand  : LREAL;
+    ActuatorSpeedCommand  : DINT;
+
+    BladePathError     : LREAL;
+    HorizontalSyncError : LREAL;
+
+    CalculatedGantryEndPosition : LREAL;
+    CalculatedBladeEndPosition  : LREAL;
+    GantryStoppingDistance      : LREAL;
+
+    // Diagnostic outputs for Scope.
+    NominalGantryVelocity : LREAL;
+    GantryFeedForward     : LREAL;
+    GantryCorrection      : LREAL;
+END_VAR
+
+
+VAR
+    // --------------------------------------------------------
+    // Gantry motion FBs
+    // --------------------------------------------------------
+
+    fbGantryMoveA : MC_MoveVelocity;
+    fbGantryMoveB : MC_MoveVelocity;
+    fbGantryHalt  : MC_Halt;
+
+    bGantryExecuteA    : BOOL;
+    bGantryExecuteB    : BOOL;
+    bGantryHaltExecute : BOOL;
+
+    bUseGantryA : BOOL;
+
+    lrGantryVelocityA : LREAL;
+    lrGantryVelocityB : LREAL;
+
+
+    // --------------------------------------------------------
+    // Blade motion FBs
+    // --------------------------------------------------------
+
+    fbBladeMoveA : MC_MoveVelocity;
+    fbBladeMoveB : MC_MoveVelocity;
+    fbBladeHalt  : MC_Halt;
+
+    bBladeExecuteA    : BOOL;
+    bBladeExecuteB    : BOOL;
+    bBladeHaltExecute : BOOL;
+
+    bUseBladeA : BOOL;
+
+    lrBladeVelocityA : LREAL;
+    lrBladeVelocityB : LREAL;
+
+
+    // --------------------------------------------------------
+    // Electrak
+    // --------------------------------------------------------
+
+    fbActControl : LLControl;
+
+    bActuatorMove : BOOL;
+
+    lrActuatorTarget : LREAL;
+    nActuatorSpeed   : DINT;
+
+
+    // --------------------------------------------------------
+    // State and command generation
+    // --------------------------------------------------------
+
+    bLastExecute         : BOOL;
+    bIssueVelocityUpdate : BOOL;
+
+    nCycleCounter : UINT;
+
+
+    // --------------------------------------------------------
+    // Geometry and velocity calculations
+    // --------------------------------------------------------
+
+    lrRadius : LREAL;
+
+    lrXForGeometry   : LREAL;
+    lrYForGeometry   : LREAL;
+    lrTargetYSquared : LREAL;
+
+    lrPathSpeed : LREAL;
+
+    lrNominalBladeVelocity : LREAL;
+
+    lrBladeCorrection : LREAL;
+
+    lrActualGantryVelocity : LREAL;
+
+    lrCalculatedActuatorSpeed : LREAL;
+
+    lrGantryEndPosition : LREAL;
+    lrBladeEndPosition  : LREAL;
+
+    lrStopTriggerPosition : LREAL;
+	bLastActuatorMove: BOOL;
+END_VAR
+
+
+
+// ============================================================
+// Default the velocity Execute pulses to FALSE.
+//
+// An A or B Execute is set TRUE for one scan when a new
+// velocity command is required.
+// ============================================================
+
+bGantryExecuteA := FALSE;
+bGantryExecuteB := FALSE;
+
+bBladeExecuteA := FALSE;
+bBladeExecuteB := FALSE;
+
+bIssueVelocityUpdate := FALSE;
+
+
+// ============================================================
+// Read actual positions every PLC scan
+// ============================================================
+
+GantryPosition := GantryX1.NcToPlc.ActPos;
+BladePosition := BladeY1.NcToPlc.ActPos;
+
+// This is the result from the previous LLControl call.
+// It is refreshed again after LLControl is called below.
+ActuatorPosition := fbActControl.getPosition;
+
+
+// ============================================================
+// External Execute rising edge
+// ============================================================
+
+IF Execute AND NOT bLastExecute THEN
+    Done := FALSE;
+    Busy := TRUE;
+    Fail := FALSE;
+
+    ErrorID := 0;
+
+    bUseGantryA := FALSE;
+    bUseBladeA := FALSE;
+
+    bGantryHaltExecute := FALSE;
+    bBladeHaltExecute := FALSE;
+
+    bActuatorMove := FALSE;
+
+    nCycleCounter := 0;
+
+    // ElementHeight is the circular path radius and expected
+    // starting gantry position.
+    lrRadius := ElementHeight;
+
+    // Final geometric horizontal position of blade centreline.
+    lrGantryEndPosition :=
+        (ActuatorEndPosition - BladeThickness) / 2.0;
+
+    IF lrGantryEndPosition < 0.0 THEN
+        lrGantryEndPosition := 0.0;
+    END_IF
+
+    // Blade target at the final horizontal position.
+    lrTargetYSquared :=
+        lrRadius * lrRadius
+        - lrGantryEndPosition * lrGantryEndPosition;
+
+    IF lrTargetYSquared > 0.0 THEN
+        lrBladeEndPosition :=
+            SQRT(lrTargetYSquared) + BladeEndOffset;
+    ELSE
+        lrBladeEndPosition := BladeEndOffset;
+    END_IF
+
+    CalculatedGantryEndPosition :=
+        lrGantryEndPosition;
+
+    CalculatedBladeEndPosition :=
+        lrBladeEndPosition;
+
+    lrActuatorTarget := ActuatorEndPosition;
+
+    State := 10;
+END_IF;
+
+
+// ============================================================
+// Execute falling edge or external Abort while running
+//
+// MC_MoveVelocity is an endless command. Making Execute FALSE
+// does not stop either axis, so both MC_Halt FBs are triggered.
+// ============================================================
+
+IF Busy
+AND (Abort OR NOT Execute)
+AND (State <> 800)
+AND (State <> 810)
+THEN
+    bIssueVelocityUpdate := FALSE;
+
+    bActuatorMove := FALSE;
+
+    bGantryHaltExecute := TRUE;
+    bBladeHaltExecute := TRUE;
+
+    State := 800;
+END_IF;
+
+
+// ============================================================
+// Calculate desired blade position on circular path
+// ============================================================
+
+IF lrRadius > 0.0 THEN
+
+    // Restrict X used by the geometry to the valid circle.
+    lrXForGeometry :=
+        LIMIT(
+            0.0,
+            GantryPosition,
+            lrRadius
+        );
+
+    lrTargetYSquared :=
+        lrRadius * lrRadius
+        - lrXForGeometry * lrXForGeometry;
+
+    IF lrTargetYSquared > 0.0 THEN
+        BladeTargetPosition :=
+            SQRT(lrTargetYSquared);
+    ELSE
+        BladeTargetPosition := 0.0;
+    END_IF
+
+ELSE
+    BladeTargetPosition := 0.0;
+END_IF;
+
+
+// Add the adjustable end offset progressively.
+//
+// At the start of the path almost none of BladeEndOffset is
+// applied. Near the bottom of the path the complete offset is
+// applied.
+IF lrRadius > 0.0 THEN
+    BladeTargetPosition :=
+        BladeTargetPosition
+        + BladeEndOffset
+        * LIMIT(
+            0.0,
+            BladeTargetPosition / lrRadius,
+            1.0
+        );
+END_IF;
+
+
+// ============================================================
+// Path and synchronization errors
+// ============================================================
+
+BladePathError :=
+    BladeTargetPosition - BladePosition;
+
+
+// At perfect horizontal synchronization:
+//
+//     ActuatorPosition
+//         = 2 * GantryPosition + BladeThickness
+//
+// Negative error means the actuator has moved inward ahead of
+// the gantry.
+//
+// Positive error means the gantry has moved inward ahead of
+// the actuator.
+HorizontalSyncError :=
+    ActuatorPosition
+    - (2.0 * GantryPosition + BladeThickness);
+
+
+// ============================================================
+// Calculate nominal circular-path velocities
+//
+// For:
+//
+//     x² + y² = R²
+//
+// a unit tangent in the folding direction is:
+//
+//     Gantry velocity magnitude = PathSpeed * Y / R
+//     Blade velocity magnitude  = PathSpeed * X / R
+//
+// Gantry direction is negative.
+// Blade direction is positive.
+// ============================================================
+
+lrPathSpeed :=
+    LIMIT(
+        0.0,
+        ABS(Velocity),
+        BladeVelocityMax
+    );
+
+IF lrRadius > 0.0 THEN
+
+    lrYForGeometry :=
+        LIMIT(
+            0.0,
+            BladeTargetPosition,
+            lrRadius
+        );
+
+    NominalGantryVelocity :=
+        lrPathSpeed * lrYForGeometry / lrRadius;
+
+    lrNominalBladeVelocity :=
+        lrPathSpeed * lrXForGeometry / lrRadius;
+
+ELSE
+    NominalGantryVelocity := 0.0;
+    lrNominalBladeVelocity := 0.0;
+END_IF;
+
+
+// ============================================================
+// Apply blade arc-path correction
+// ============================================================
+
+lrBladeCorrection :=
+    LIMIT(
+        -MaxBladeCorrection,
+        BladeCorrectionGain * BladePathError,
+        MaxBladeCorrection
+    );
+
+BladeVelocityCommand :=
+    LIMIT(
+        0.0,
+        lrNominalBladeVelocity + lrBladeCorrection,
+        BladeVelocityMax
+    );
+
+
+// ============================================================
+// Calculate gantry/actuator position correction
+//
+// Negative synchronization error means the actuator has moved
+// inward ahead of the gantry.
+//
+// The resulting negative correction is subtracted from the
+// gantry base velocity, increasing the gantry speed.
+// ============================================================
+
+GantryCorrection :=
+    LIMIT(
+        -MaxGantryCorrection,
+        GantrySyncGain * HorizontalSyncError,
+        MaxGantryCorrection
+    );
+
+
+// ============================================================
+// Calculate actuator speed
+//
+// The actuator nominally travels twice as fast as the gantry.
+// The Electrak command cannot be lower than ActuatorSpeedMin.
+// ============================================================
+
+lrCalculatedActuatorSpeed :=
+    2.0 * NominalGantryVelocity;
+
+IF lrCalculatedActuatorSpeed
+    >= DINT_TO_LREAL(ActuatorSpeedMin)
+THEN
+    nActuatorSpeed :=
+        LREAL_TO_DINT(
+            LIMIT(
+                DINT_TO_LREAL(ActuatorSpeedMin),
+                lrCalculatedActuatorSpeed,
+                DINT_TO_LREAL(ActuatorSpeedMax)
+            )
+        );
+ELSE
+    nActuatorSpeed := ActuatorSpeedMin;
+END_IF
+
+ActuatorSpeedCommand := nActuatorSpeed;
+
+
+// ============================================================
+// Calculate gantry feed-forward
+//
+// This gives the gantry an immediate base velocity derived from
+// the actuator command instead of waiting for position error to
+// accumulate.
+//
+// The theoretical ratio is 0.5 because the actuator travels
+// twice the gantry distance.
+// ============================================================
+
+GantryFeedForward :=
+    DINT_TO_LREAL(nActuatorSpeed)
+    * ActuatorToGantryVelocityRatio;
+
+
+// ============================================================
+// Final gantry velocity command
+//
+// NominalGantryVelocity describes the circular-path requirement.
+//
+// GantryFeedForward describes the velocity needed to remain
+// horizontally centred with the actuator.
+//
+// Use whichever base requirement is greater, then apply the
+// measured position-error correction.
+// ============================================================
+
+GantryVelocityCommand :=
+    LIMIT(
+        0.0,
+        MAX(
+            NominalGantryVelocity,
+            GantryFeedForward
+        ) - GantryCorrection,
+        GantryVelocityMax
+    );
+
+
+// ============================================================
+// Calculate gantry stopping distance
+// ============================================================
+
+lrActualGantryVelocity :=
+    ABS(GantryX1.NcToPlc.ActVelo);
+
+IF GantryDeceleration > 0.0 THEN
+    GantryStoppingDistance :=
+        (lrActualGantryVelocity * lrActualGantryVelocity)
+        / (2.0 * GantryDeceleration);
+ELSE
+    GantryStoppingDistance := 0.0;
+END_IF
+
+lrStopTriggerPosition :=
+    lrGantryEndPosition
+    + GantryStoppingDistance
+    + GantryStopMargin;
+
+
+// ============================================================
+// Main state machine
+// ============================================================
+
+IF Busy THEN
+
+    CASE State OF
+
+        // ----------------------------------------------------
+        // Validate and start
+        // ----------------------------------------------------
+        10:
+            IF lrRadius <= 0.0 THEN
+                Fail := TRUE;
+                State := 800;
+
+            ELSIF ABS(HorizontalSyncError) > MaxSyncError THEN
+                // Starting geometry is too far out of sync.
+                Fail := TRUE;
+                State := 800;
+
+            ELSE
+                // Start with one immediate velocity update.
+                bIssueVelocityUpdate := TRUE;
+                nCycleCounter := 0;
+
+                // Keep the actuator final position target
+                // constant throughout the fold.
+                lrActuatorTarget := ActuatorEndPosition;
+
+                // Start the Electrak immediately at its minimum
+                // usable speed.
+                //
+                // Gantry feed-forward immediately requests the
+                // matching gantry velocity. Position correction
+                // compensates for the remaining difference.
+                bActuatorMove := TRUE;
+
+                nActuatorSpeed :=
+                    ActuatorSpeedMin;
+
+                ActuatorSpeedCommand :=
+                    nActuatorSpeed;
+
+                State := 20;
+            END_IF
+
+
+        // ----------------------------------------------------
+        // Follow the folding path
+        // ----------------------------------------------------
+        20:
+            // Perform a controlled stop if horizontal
+            // synchronization becomes excessive.
+            IF ABS(HorizontalSyncError) > MaxSyncError THEN
+                bIssueVelocityUpdate := FALSE;
+
+                bActuatorMove := FALSE;
+
+                bGantryHaltExecute := TRUE;
+                bBladeHaltExecute := TRUE;
+
+                Fail := TRUE;
+
+                State := 800;
+
+
+            // Begin stopping the stepper axes early enough to
+            // stop near the calculated horizontal endpoint.
+            ELSIF GantryPosition <= lrStopTriggerPosition THEN
+                bIssueVelocityUpdate := FALSE;
+
+                bGantryHaltExecute := TRUE;
+                bBladeHaltExecute := TRUE;
+
+                // Let the actuator continue toward its exact
+                // final position while the steppers decelerate.
+                bActuatorMove := TRUE;
+
+                State := 30;
+
+
+            ELSE
+                // Keep the actuator movement active throughout
+                // the normal path-following state.
+                bActuatorMove := TRUE;
+
+                nCycleCounter :=
+                    nCycleCounter + 1;
+
+                IF (UpdateEveryNCycles = 0)
+                OR (nCycleCounter >= UpdateEveryNCycles)
+                THEN
+                    nCycleCounter := 0;
+                    bIssueVelocityUpdate := TRUE;
+                END_IF
+            END_IF
+
+
+        // ----------------------------------------------------
+        // Wait for both stepper axes to halt and the actuator
+        // to reach its final target.
+        // ----------------------------------------------------
+        30:
+            IF fbGantryHalt.Error THEN
+                ErrorID :=
+                    fbGantryHalt.ErrorID;
+
+                Fail := TRUE;
+
+                bActuatorMove := FALSE;
+
+                bGantryHaltExecute := FALSE;
+                bBladeHaltExecute := TRUE;
+
+                State := 800;
+
+
+            ELSIF fbBladeHalt.Error THEN
+                ErrorID :=
+                    fbBladeHalt.ErrorID;
+
+                Fail := TRUE;
+
+                bActuatorMove := FALSE;
+
+                bGantryHaltExecute := TRUE;
+                bBladeHaltExecute := FALSE;
+
+                State := 800;
+
+
+            ELSIF fbGantryHalt.Done
+            AND fbBladeHalt.Done
+            AND fbActControl.Done
+            THEN
+                bGantryHaltExecute := FALSE;
+                bBladeHaltExecute := FALSE;
+
+                bActuatorMove := FALSE;
+
+                // Leave one full scan with Halt Execute FALSE.
+                State := 40;
+            END_IF
+
+
+        // ----------------------------------------------------
+        // Release the Halt FBs
+        // ----------------------------------------------------
+        40:
+            State := 50;
+
+
+        // ----------------------------------------------------
+        // Successful completion
+        // ----------------------------------------------------
+        50:
+            Busy := FALSE;
+            Done := TRUE;
+
+
+        // ----------------------------------------------------
+        // Begin controlled abort/error stop
+        // ----------------------------------------------------
+        800:
+            bIssueVelocityUpdate := FALSE;
+            bActuatorMove := FALSE;
+
+            bGantryHaltExecute := TRUE;
+            bBladeHaltExecute := TRUE;
+
+            State := 810;
+
+
+        // ----------------------------------------------------
+        // Wait for controlled abort/error stop
+        // ----------------------------------------------------
+        810:
+            IF fbGantryHalt.Error THEN
+                ErrorID :=
+                    fbGantryHalt.ErrorID;
+
+                bGantryHaltExecute := FALSE;
+                bBladeHaltExecute := FALSE;
+
+                Busy := FALSE;
+                Fail := TRUE;
+
+                State := 900;
+
+
+            ELSIF fbBladeHalt.Error THEN
+                ErrorID :=
+                    fbBladeHalt.ErrorID;
+
+                bGantryHaltExecute := FALSE;
+                bBladeHaltExecute := FALSE;
+
+                Busy := FALSE;
+                Fail := TRUE;
+
+                State := 900;
+
+
+            ELSIF fbGantryHalt.Done
+            AND fbBladeHalt.Done
+            THEN
+                bGantryHaltExecute := FALSE;
+                bBladeHaltExecute := FALSE;
+
+                Busy := FALSE;
+                Fail := TRUE;
+
+                State := 900;
+            END_IF
+
+
+        // ----------------------------------------------------
+        // Failed: wait for external Execute to return FALSE
+        // ----------------------------------------------------
+        900:
+            Busy := FALSE;
+            Done := FALSE;
+            Fail := TRUE;
+
+            bActuatorMove := FALSE;
+
+            bGantryHaltExecute := FALSE;
+            bBladeHaltExecute := FALSE;
+
+    END_CASE
+
+END_IF;
+
+
+// ============================================================
+// Issue paired velocity commands
+//
+// Gantry and blade are updated during the same PLC scan.
+//
+// Each axis alternates between its A and B MC_MoveVelocity
+// instances.
+// ============================================================
+
+IF bIssueVelocityUpdate
+AND Busy
+AND NOT Fail
+AND State = 20
+THEN
+    // --------------------------------------------------------
+    // Gantry
+    // --------------------------------------------------------
+
+    bUseGantryA :=
+        NOT bUseGantryA;
+
+    IF bUseGantryA THEN
+        lrGantryVelocityA :=
+            GantryVelocityCommand;
+
+        bGantryExecuteA :=
+            TRUE;
+    ELSE
+        lrGantryVelocityB :=
+            GantryVelocityCommand;
+
+        bGantryExecuteB :=
+            TRUE;
+    END_IF
+
+
+    // --------------------------------------------------------
+    // Blade
+    // --------------------------------------------------------
+
+    bUseBladeA :=
+        NOT bUseBladeA;
+
+    IF bUseBladeA THEN
+        lrBladeVelocityA :=
+            BladeVelocityCommand;
+
+        bBladeExecuteA :=
+            TRUE;
+    ELSE
+        lrBladeVelocityB :=
+            BladeVelocityCommand;
+
+        bBladeExecuteB :=
+            TRUE;
+    END_IF
+END_IF;
+
+
+// ============================================================
+// Call every motion FB exactly once per PLC scan
+// ============================================================
+
+fbGantryMoveA(
+    Axis         := GantryX1,
+    Execute      := bGantryExecuteA,
+    Velocity     := lrGantryVelocityA,
+    Acceleration := GantryAcceleration,
+    Deceleration := GantryDeceleration,
+    Jerk         := GantryJerk,
+    Direction    := MC_Negative_Direction,
+    BufferMode   := MC_Aborting
+);
+
+fbGantryMoveB(
+    Axis         := GantryX1,
+    Execute      := bGantryExecuteB,
+    Velocity     := lrGantryVelocityB,
+    Acceleration := GantryAcceleration,
+    Deceleration := GantryDeceleration,
+    Jerk         := GantryJerk,
+    Direction    := MC_Negative_Direction,
+    BufferMode   := MC_Aborting
+);
+
+fbBladeMoveA(
+    Axis         := BladeY1,
+    Execute      := bBladeExecuteA,
+    Velocity     := lrBladeVelocityA,
+    Acceleration := BladeAcceleration,
+    Deceleration := BladeDeceleration,
+    Jerk         := BladeJerk,
+    Direction    := MC_Positive_Direction,
+    BufferMode   := MC_Aborting
+);
+
+fbBladeMoveB(
+    Axis         := BladeY1,
+    Execute      := bBladeExecuteB,
+    Velocity     := lrBladeVelocityB,
+    Acceleration := BladeAcceleration,
+    Deceleration := BladeDeceleration,
+    Jerk         := BladeJerk,
+    Direction    := MC_Positive_Direction,
+    BufferMode   := MC_Aborting
+);
+
+fbGantryHalt(
+    Axis         := GantryX1,
+    Execute      := bGantryHaltExecute,
+    Deceleration := GantryDeceleration,
+    Jerk         := GantryJerk,
+    BufferMode   := MC_Aborting
+);
+
+fbBladeHalt(
+    Axis         := BladeY1,
+    Execute      := bBladeHaltExecute,
+    Deceleration := BladeDeceleration,
+    Jerk         := BladeJerk,
+    BufferMode   := MC_Aborting
+);
+
+
+// LLControl is called every PLC scan.
+//
+// The target position remains constant while nTargetSpeed is
+// changed during the move.
+//IF bActuatorMove OR bLastActuatorMove THEN doesn't work, causes MiddleFold to fail at nPhase 65
+fbActControl(
+    fTargetPosition := lrActuatorTarget,
+    nTargetSpeed     := nActuatorSpeed,
+    bMoveTrigger     := bActuatorMove
+);
+//END_IF
+
+//bLastActuatorMove := bActuatorMove;
+
+// Refresh actuator position after the current LLControl call.
+ActuatorPosition :=
+    fbActControl.getPosition;
+
+
+// ============================================================
+// Motion FB error handling
+// ============================================================
+
+IF fbGantryMoveA.Error THEN
+    ErrorID := fbGantryMoveA.ErrorID;
+
+    Fail := TRUE;
+    State := 800;
+END_IF
+
+IF fbGantryMoveB.Error THEN
+    ErrorID := fbGantryMoveB.ErrorID;
+
+    Fail := TRUE;
+    State := 800;
+END_IF
+
+IF fbBladeMoveA.Error THEN
+    ErrorID := fbBladeMoveA.ErrorID;
+
+    Fail := TRUE;
+    State := 800;
+END_IF
+
+IF fbBladeMoveB.Error THEN
+    ErrorID := fbBladeMoveB.ErrorID;
+
+    Fail := TRUE;
+    State := 800;
+END_IF
+
+IF fbGantryHalt.Error THEN
+    ErrorID := fbGantryHalt.ErrorID;
+    Fail := TRUE;
+END_IF
+
+IF fbBladeHalt.Error THEN
+    ErrorID := fbBladeHalt.ErrorID;
+    Fail := TRUE;
+END_IF;
+
+
+// ============================================================
+// Reset after completion or failure
+// ============================================================
+
+IF NOT Execute AND (Done OR Fail) THEN
+    Done := FALSE;
+    Busy := FALSE;
+    Fail := FALSE;
+
+    bActuatorMove := FALSE;
+
+    bGantryHaltExecute := FALSE;
+    bBladeHaltExecute := FALSE;
+
+    nCycleCounter := 0;
+
+    State := 0;
+END_IF
+
+
+bLastExecute := Execute;

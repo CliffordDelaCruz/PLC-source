@@ -1,0 +1,28 @@
+FUNCTION_BLOCK Initialising
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	eInitialisingStatus : InitialisingStatus;
+	ExitInitialisingState : BOOL;
+END_VAR
+VAR
+	fbNormInitial : NormalInitialIsation;
+END_VAR
+
+
+ExitInitialisingState := FALSE; // Resets exit condition, this is common across all Main FB'
+
+
+
+
+
+
+// ------------------------I need a position check between the gantry and the actuator ------------------------
+
+
+fbNormInitial(bEnable := TRUE);
+
+IF fbNormInitial.Done THEN
+	eInitialisingStatus := INITIALISING_COMPLETE;
+	ExitInitialisingState := TRUE;
+END_IF

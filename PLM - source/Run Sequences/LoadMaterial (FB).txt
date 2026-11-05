@@ -1,0 +1,800 @@
+FUNCTION_BLOCK LoadMaterial
+VAR_INPUT
+	FirstFoldHeight : LREAL;
+	Enable : BOOL;
+END_VAR
+VAR_OUTPUT
+	Done : BOOL;
+	Busy : BOOL;
+	Fail : BOOL;
+END_VAR
+VAR
+	nPhase : LoadMaterialStates;
+	lastEnable : BOOL;
+	bladeTarget : LREAL;
+	actuatorTarget : LREAL := 394;
+	gantryTarget : LREAL := 20;
+	howManyTimesHasLoadMaterialBeenCalled_1 : INT := 0;
+	howManyTimesHasLoadMaterialBeenCalled_2 : INT := 0;
+	howManyTimesHasLoadMaterialBeenCalled_3 : INT := 0;
+	disableLoadMaterialAxisCalls: BOOL := FALSE;
+END_VAR
+VAR
+	fbGanAbs	 	: MC_MoveAbsolute;
+	fbBldAbs 		: MC_MoveAbsolute;
+	fbActCtrl		: LLControl;
+	fbCClampCtrl 	: CClampCtrl;
+	fbFClampCtrl 	: FClampCtrl;
+
+	bCClampExe : BOOL := FALSE;
+	bFClampExe : BOOL := FALSE;
+	CClampDir  : ClampDirections;
+	FClampDir  : ClampDirections;
+	
+	
+	gantryEnable	: BOOL := FALSE;
+	bladeEnable		: BOOL := FALSE;
+	actuatorEnable		: BOOL := FALSE;
+
+	actuatorSpeed	: INT := 0;
+	gantrySpeed	: INT := 0;
+	bladeSpeed	: INT := 0;
+	
+	
+	startPosTimeout : TON;
+
+	fbBLClampCtrl 	: BLClampCtrl;
+	fbBTClampCtrl 	: BTClampCtrl;
+	foldTimeout 	: TON;
+
+	bBLClampExe : BOOL := FALSE;
+	BLClampDir  : ClampDirections;
+	bBTClampExe : BOOL := FALSE;
+	BTClampDir  : ClampDirections;
+
+	fbFirstFoldPathing   : FirstFoldPathing;
+	firstFoldPathingExe 	: BOOL := FALSE;
+	delayTimer		: TON;
+	delayTestTimer		: TON;
+
+END_VAR
+
+
+// Rising edge detection
+IF Enable AND NOT lastEnable THEN
+	nPhase := START;
+	Done := FALSE;
+	Busy := FALSE;
+	Fail := FALSE;
+END_IF
+
+CASE nPhase OF 
+	START: // Start
+		IF Enable THEN 
+			nPhase := CUTTER_CLAMP_UP1;
+			Busy := TRUE;
+		END_IF
+		
+	CUTTER_CLAMP_UP1: // Cutter Clamp up
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_UP;
+			startPosTimeout(IN := FALSE);
+			nPhase := CUTTER_CLAMP_UP_CONFIRM1;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	CUTTER_CLAMP_UP_CONFIRM1: // Cutter clamp up continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := FRONT_CLAMP_UP;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	FRONT_CLAMP_UP: // Front Clamp up
+		IF NOT fbFClampCtrl.Busy THEN
+			bFClampExe := TRUE;
+			FClampDir := CLAMP_UP;
+			startPosTimeout(IN := FALSE);
+			nPhase := FRONT_CLAMP_UP_CONFIRM;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bFClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	FRONT_CLAMP_UP_CONFIRM: // Front clamp up continued: waits for front clamp to finish moving before continuing.
+		IF fbFClampCtrl.Done THEN
+			bFClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := BACK_CLAMP_ENGAGE;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bFClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	BACK_CLAMP_ENGAGE: // Back Clamp engage
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			BLClampDir 	:= CLAMP_UP;
+			bBTClampExe := TRUE;
+			BTClampDir 	:= CLAMP_DOWN;
+			FoldTimeout(IN := FALSE);
+			nPhase := BACK_CLAMP_ENGAGE_CONFIRM;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	BACK_CLAMP_ENGAGE_CONFIRM: // Back Clamp engage continued 
+		IF fbBTClampCtrl.Done AND fbBLClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bBTClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := MOVE_TO_LOADING_POSITION;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	MOVE_TO_LOADING_POSITION: // Move Axis to loading position
+		IF NOT fbGanAbs.Busy AND NOT fbActCtrl.Busy AND NOT fbBldAbs.Busy THEN
+			actuatorEnable := TRUE;
+			gantryEnable := TRUE;
+			bladeEnable := TRUE;
+			actuatorSpeed := 40;
+			gantrySpeed := 50;
+			bladeSpeed := 50;
+			actuatorTarget := FirstFoldHeight; // (394 is max)
+			gantryTarget := 0; // 328 is max gantry position;
+			bladeTarget := -10;
+			startPosTimeout(IN := FALSE);
+			nPhase := MOVE_TO_LOADING_POSITION_CONFIRM;
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#10S);
+			IF startPosTimeout.Q THEN
+				gantryEnable := FALSE;
+				bladeEnable := FALSE;
+				actuatorEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	MOVE_TO_LOADING_POSITION_CONFIRM: // wait for axis to finish moving to loading position continued
+		IF fbGanAbs.Done AND fbActCtrl.Done AND fbBldAbs.Done THEN
+			gantryEnable := FALSE;
+			bladeEnable := FALSE;
+			actuatorEnable := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := WAIT_FOR_USER_INPUT;
+		ELSIF fbGanAbs.Error AND fbBldAbs.Error THEN
+			gantryEnable := FALSE;
+			bladeEnable := FALSE;
+			actuatorEnable := FALSE;
+			error.gantryMoveError := TRUE;
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbGanAbs.Error THEN
+			gantryEnable := FALSE;
+			bladeEnable := FALSE;
+			actuatorEnable := FALSE;
+			error.gantryMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSIF fbBldAbs.Error THEN
+			gantryEnable := FALSE;
+			bladeEnable := FALSE;
+			actuatorEnable := FALSE;
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;	 
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#20S);
+			IF startPosTimeout.Q THEN
+				gantryEnable := FALSE;
+				bladeEnable := FALSE;
+				actuatorEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	WAIT_FOR_USER_INPUT:
+		IF DigInputs.ButtonPress1.Q THEN
+			nPhase := CUTTER_CLAMP_DOWN;
+		END_IF
+
+	CUTTER_CLAMP_DOWN: // Cutter Clamp down
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_DOWN;
+			startPosTimeout(IN := FALSE);
+			nPhase := CUTTER_CLAMP_DOWN_CONFIRM;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	CUTTER_CLAMP_DOWN_CONFIRM: // Cutter clamp down continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := FIRST_FOLD_START_POSITION;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	FIRST_FOLD_START_POSITION: 
+	
+		IF NOT fbGanAbs.Busy AND NOT fbActCtrl.Busy AND NOT fbBldAbs.Busy THEN
+			bladeEnable := TRUE;
+			bladeSpeed := 50;
+			bladeTarget := 10;
+			startPosTimeout(IN := FALSE);
+			nPhase := FIRST_FOLD_START_POSITION_CONFIRM;
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#10S);
+			IF startPosTimeout.Q THEN
+				bladeEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	FIRST_FOLD_START_POSITION_CONFIRM: // wait for axis to finish moving to loading position continued
+	
+		IF fbBldAbs.Done THEN
+			bladeEnable := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := FIRST_FOLD;
+		ELSIF fbBldAbs.Error THEN
+			bladeEnable := FALSE;
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;	 
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#20S);
+			IF startPosTimeout.Q THEN
+				bladeEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	FIRST_FOLD: // Fold the first fold
+	
+		delayTimer(IN := TRUE, PT := T#3S);
+		IF NOT fbFirstFoldPathing.Busy AND delayTimer.Q THEN 
+			delayTimer(IN := FALSE);
+			firstFoldPathingExe := TRUE;
+			disableLoadMaterialAxisCalls := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := FIRST_FOLD_CONFIRM;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#60S);
+			IF foldTimeout.Q THEN
+				firstFoldPathingExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	FIRST_FOLD_CONFIRM: // Fold the element continued
+	
+		IF fbFirstFoldPathing.Done THEN
+			firstFoldPathingExe := FALSE;
+			disableLoadMaterialAxisCalls := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := FRONT_CLAMP_DOWN;
+		ELSIF fbFirstFoldPathing.Fail THEN
+			firstFoldPathingExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.pathingError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#50S);
+			IF foldTimeout.Q THEN
+				firstFoldPathingExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	FRONT_CLAMP_DOWN: // Front Clamp down
+	
+		IF NOT fbFClampCtrl.Busy THEN
+			bFClampExe := TRUE;
+			FClampDir := CLAMP_DOWN;
+			startPosTimeout(IN := FALSE);
+			nPhase := FRONT_CLAMP_DOWN_CONFIRM;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bFClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	FRONT_CLAMP_DOWN_CONFIRM: // Front clamp down continued: waits for front clamp to finish moving before continuing.
+	
+		IF fbFClampCtrl.Done THEN
+			bFClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := CUTTER_CLAMP_UP2;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bFClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+			
+	CUTTER_CLAMP_UP2: // Cutter Clamp up
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_UP;
+			startPosTimeout(IN := FALSE);
+			nPhase := CUTTER_CLAMP_UP_CONFIRM2;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	CUTTER_CLAMP_UP_CONFIRM2: // Cutter clamp up continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := ACTUATOR_BACK_A_BIT;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	ACTUATOR_BACK_A_BIT: // Move blade up and actuator back
+	
+		IF NOT fbGanAbs.Busy AND NOT fbActCtrl.Busy AND NOT fbBldAbs.Busy THEN
+			actuatorEnable := TRUE;
+			bladeEnable := TRUE;
+			actuatorSpeed := 35;
+			bladeSpeed := 40;
+			actuatorTarget := ActuatorToMachinePos(nActuatorPos := ActuatorGVL.gActPos, nZeroPos := ActuatorGVL.nActuatorMaxPos ) + 5; // (394 is max)
+			bladeTarget := -10;
+			startPosTimeout(IN := FALSE);
+			nPhase := ACTUATOR_BACK_A_BIT_CONFIRM;
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#10S);
+			IF startPosTimeout.Q THEN
+				bladeEnable := FALSE;
+				actuatorEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	ACTUATOR_BACK_A_BIT_CONFIRM: // wait for axis to finish moving to loading position continued
+	
+		IF fbActCtrl.Done AND fbBldAbs.Done THEN
+			bladeEnable := FALSE;
+			actuatorEnable := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := CUTTER_CLAMP_DOWN_2;
+		ELSIF fbBldAbs.Error THEN
+			bladeEnable := FALSE;
+			actuatorEnable := FALSE;
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;	 
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#20S);
+			IF startPosTimeout.Q THEN
+				bladeEnable := FALSE;
+				actuatorEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	CUTTER_CLAMP_DOWN_2: // Cutter Clamp down
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_DOWN;
+			startPosTimeout(IN := FALSE);
+			nPhase := CUTTER_CLAMP_DOWN_CONFIRM_2;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	CUTTER_CLAMP_DOWN_CONFIRM_2: // Cutter clamp down continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := FRONT_CLAMP_UP_2;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	FRONT_CLAMP_UP_2: // Front Clamp up
+		IF NOT fbFClampCtrl.Busy THEN
+			bFClampExe := TRUE;
+			FClampDir := CLAMP_UP;
+			startPosTimeout(IN := FALSE);
+			nPhase := FRONT_CLAMP_UP_CONFIRM_2;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bFClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	FRONT_CLAMP_UP_CONFIRM_2: // Front clamp up continued: waits for front clamp to finish moving before continuing.
+		IF fbFClampCtrl.Done THEN
+			bFClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := BACK_CLAMP_DISENGAGE;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bFClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	BACK_CLAMP_DISENGAGE:
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			BLClampDir 	:= CLAMP_DOWN;
+			bBTClampExe := TRUE;
+			BTClampDir 	:= CLAMP_UP;
+			FoldTimeout(IN := FALSE);
+			nPhase := BACK_CLAMP_DISENGAGE_CONFIRM;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	BACK_CLAMP_DISENGAGE_CONFIRM: // Back Clamp engage continued 
+		IF fbBTClampCtrl.Done AND fbBLClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bBTClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := MOVE_FOLD_THROUGH_BACK_CLAMP;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	MOVE_FOLD_THROUGH_BACK_CLAMP: 
+	
+		IF NOT fbActCtrl.Busy AND NOT fbBldAbs.Busy THEN
+			actuatorEnable := TRUE;
+			actuatorSpeed := 35;
+			actuatorTarget := ActuatorToMachinePos(nActuatorPos := ActuatorGVL.gActPos, nZeroPos := ActuatorGVL.nActuatorMaxPos ) - 7; // (394 is max)
+			startPosTimeout(IN := FALSE);
+			nPhase := MOVE_FOLD_THROUGH_BACK_CLAMP_CONFIRM;
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#10S);
+			IF startPosTimeout.Q THEN
+				actuatorEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	MOVE_FOLD_THROUGH_BACK_CLAMP_CONFIRM: // wait for axis to finish moving to loading position continued
+	
+		IF fbActCtrl.Done THEN
+			actuatorEnable := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := BACK_LOWER_CLAMP_ENGAGE;
+		ELSE
+			startPosTimeout(IN := TRUE, PT := T#20S);
+			IF startPosTimeout.Q THEN
+				actuatorEnable := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	BACK_LOWER_CLAMP_ENGAGE: // Back lower Clamp engage (because if the top clamp comes down first,
+                             // it bends the material into the lower clamp)
+		IF NOT fbBLClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			BLClampDir 	:= CLAMP_UP;
+			FoldTimeout(IN := FALSE);
+			nPhase := BACK_LOWER_CLAMP_ENGAGE_CONFIRM;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#10S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	BACK_LOWER_CLAMP_ENGAGE_CONFIRM: // Back lower Clamp engage continued 
+		IF fbBLClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := BACK_TOP_CLAMP_ENGAGE;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	BACK_TOP_CLAMP_ENGAGE: // Back Top Clamp engage
+		IF NOT fbBTClampCtrl.Busy THEN
+			bBTClampExe := TRUE;
+			BTClampDir 	:= CLAMP_DOWN;
+			FoldTimeout(IN := FALSE);
+			nPhase := BACK_TOP_CLAMP_ENGAGE_CONFIRM;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#10S);
+			IF foldTimeout.Q THEN
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	BACK_TOP_CLAMP_ENGAGE_CONFIRM: // Back Top Clamp engage continued 
+		IF fbBTClampCtrl.Done THEN
+			bBTClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+//			nPhase := CUTTER_CLAMP_UP3;
+			nPhase := CASE_DONE;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+// following CASEs added for testing purposes so the material can be removed after doing a load material fold.
+
+	CUTTER_CLAMP_UP3: // Cutter Clamp up
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_UP;
+			startPosTimeout(IN := FALSE);
+			nPhase := CUTTER_CLAMP_UP_CONFIRM3;
+		ELSE	
+			startPosTimeout(IN := TRUE, PT := T#50S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	CUTTER_CLAMP_UP_CONFIRM3: // Cutter clamp up continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			startPosTimeout(IN := FALSE);
+			nPhase := BACK_CLAMP_DISENGAGE_2;
+		ELSE 
+			startPosTimeout(IN := TRUE, PT := T#5S);
+			IF startPosTimeout.Q THEN
+				bCClampExe := FALSE;
+				startPosTimeout(IN := FALSE);
+				error.startPosTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	BACK_CLAMP_DISENGAGE_2:
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			BLClampDir 	:= CLAMP_DOWN;
+			bBTClampExe := TRUE;
+			BTClampDir 	:= CLAMP_UP;
+			FoldTimeout(IN := FALSE);
+			nPhase := BACK_CLAMP_DISENGAGE_CONFIRM_2;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	BACK_CLAMP_DISENGAGE_CONFIRM_2: // Back Clamp engage continued 
+		IF fbBTClampCtrl.Done AND fbBLClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bBTClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := CASE_DONE;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+
+
+
+
+		
+	CASE_DONE: // Done
+		howManyTimesHasLoadMaterialBeenCalled_3 := howManyTimesHasLoadMaterialBeenCalled_3 + 1;
+		Busy := FALSE;
+		Fail := FALSE;
+		Done := TRUE;
+		nPhase := START;
+		
+END_CASE
+
+// Clamp Move fb calls
+fbCClampCtrl(bExecute := bCClampExe, EDirection := CClampDir);
+fbFClampCtrl(bExecute := bFClampExe, EDirection := FClampDir);
+fbBLClampCtrl(bExecute := bBLClampExe, EDirection := BLClampDir);
+fbBTClampCtrl(bExecute := bBTClampExe, EDirection := BTClampDir);
+
+// first fold pathing call
+fbFirstFoldPathing(Execute := firstFoldPathingExe, ElementHeight := FirstFoldHeight, Velocity := 10);
+
+// fb call to move machine into start position
+IF NOT Done AND NOT disableLoadMaterialAxisCalls THEN 
+	fbGanAbs(Axis := GantryX1, Execute := gantryEnable, Position := gantryTarget, Velocity := gantrySpeed);
+	fbActCtrl(fTargetPosition := actuatorTarget , nTargetSpeed := actuatorSpeed, bMoveTrigger := actuatorEnable);
+	fbBldAbs(Axis := BladeY1, Execute := bladeEnable, Position := bladeTarget, Velocity := bladeSpeed);
+END_IF
+// Sets last enable for rising edge detection
+lastEnable := Enable;

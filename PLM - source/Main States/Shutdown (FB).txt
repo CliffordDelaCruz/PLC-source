@@ -1,0 +1,194 @@
+FUNCTION_BLOCK Shutdown
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+	nPhase : INT := 0;
+	fbMoveGantry : MC_MoveAbsolute;
+	fbMoveBlade : MC_MoveAbsolute;
+	moveGantryExe : BOOL := FALSE;
+	moveBladeExe : BOOL := FALSE;
+	shutdownTimeout : TON;
+	fbLLCtrl : LLControl;
+	bLLMoveExe : BOOL := FALSE;
+	fbCClampCtrl 	: CClampCtrl;
+	fbFClampCtrl 	: FClampCtrl;
+	fbBLClampCtrl 	: BLClampCtrl;
+	fbBTClampCtrl 	: BTClampCtrl;
+	bCClampExe : BOOL := FALSE;
+	bFClampExe : BOOL := FALSE;
+	bBLClampExe : BOOL := FALSE;
+	bBTClampExe : BOOL := FALSE;
+	MCPowerX1 : MC_Power;
+	MCPowerX2 : MC_Power;
+	MCPowerY1 : MC_Power;
+	MCPowerY2 : MC_Power;
+	MCPowerZ1 : MC_Power;
+END_VAR
+
+
+
+// Unlike the rest of the PLC code for this machine that will send the machine into and error state when a step fails this 
+// flags the error but does not send the machine into its error state it will still move to the next step
+CASE nPhase OF
+	
+	10: // Move Gantry to 100mm and retract actuator
+		IF NOT fbLLCtrl.Busy AND NOT fbMoveGantry.Busy THEN
+			bLLMoveExe := TRUE;
+			shutdownTimeout(IN := FALSE);
+			nPhase := 11;
+		ELSE 
+			shutdownTimeout(IN := TRUE, PT := T#10S);
+			IF shutdownTimeout.Q THEN
+				moveGantryExe := FALSE;
+				bLLMoveExe := FALSE;
+				shutdownTimeout(IN := FALSE);
+				error.shutdownTimeout := TRUE;
+				nPhase := 11;
+			END_IF
+		END_IF
+	
+	11: // Move Gantry to 100mm and retract actuator, this waits for actuator to start moving before allowing gantry to move
+		IF fbLLCtrl.MoveIssued THEN
+			moveGantryExe := TRUE;
+			shutdownTimeout(IN := FALSE);
+			nPhase := 12;
+		ELSE
+			shutdownTimeout(IN := TRUE, PT := T#10S);
+			IF shutdownTimeout.Q THEN
+				moveGantryExe := FALSE;
+				bLLMoveExe := FALSE;
+				shutdownTimeout(IN := FALSE);
+				error.shutdownTimeout := TRUE;
+				nPhase := 12;
+			END_IF
+		END_IF
+	
+	12: // Move Gantry to 100mm and retract actuator continued
+		IF fbLLCtrl.Done AND fbMoveGantry.Done THEN
+			bLLMoveExe := FALSE;
+			moveGantryExe := FALSE;
+			shutdownTimeout(IN := FALSE);
+			nPhase := 20;
+		ELSIF fbMoveGantry.Error THEN 
+			moveGantryExe := FALSE;
+			bLLMoveExe := FALSE;
+			shutdownTimeout(IN := FALSE);
+			error.gantryMoveError := TRUE;
+			nPhase := 12;
+		ELSE
+			shutdownTimeout(IN := TRUE, PT := T#10S);
+			IF shutdownTimeout.Q THEN
+				moveGantryExe := FALSE;
+				bLLMoveExe := FALSE;
+				shutdownTimeout(IN := FALSE);
+				error.shutdownTimeout := TRUE;
+				nPhase := 20;
+			END_IF
+		END_IF
+		
+	20: // Extend Blade down to max position
+		IF NOT fbMoveBlade.Busy THEN
+			moveBladeExe := TRUE;
+			shutdownTimeout(IN := FALSE);
+			nPhase := 21;
+		ELSE
+			shutdownTimeout(IN := TRUE, PT := T#10S);
+			IF shutdownTimeout.Q THEN
+				moveBladeExe := FALSE;
+				shutdownTimeout(IN := FALSE);
+				error.shutdownTimeout := TRUE;
+				nPhase := 21;
+			END_IF
+		END_IF
+		
+	21: // Move blade down continued
+		IF fbMoveBlade.Done THEN
+			moveBladeExe := FALSE;
+			shutdownTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbMoveBlade.Error THEN
+			moveBladeExe := FALSE;
+			error.bladeMoveError := TRUE;
+			nPhase := 30;	 
+		ELSE
+			shutdownTimeout(IN := TRUE, PT := T#20S);
+			IF shutdownTimeout.Q THEN
+				moveBladeExe := FALSE;
+				shutdownTimeout(IN := FALSE);
+				error.shutdownTimeout := TRUE;
+				nPhase := 30;
+			END_IF
+		END_IF
+
+	30: // Retract FClamp and BLClamp and extend BTClamp	
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy AND NOT fbFClampCtrl.Busy AND NOT fbCClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			bFClampExe	:= TRUE;
+			bCClampExe	:= TRUE;
+			bBTClampExe := TRUE;
+			shutdownTimeout(IN := FALSE);
+			nPhase := 31;
+		ELSE	
+			shutdownTimeout(IN := TRUE, PT := T#20S);
+			IF shutdownTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bCClampExe	:= FALSE;
+				bFClampExe	:= FALSE;
+				bBTClampExe := FALSE;
+				shutdownTimeout(IN := FALSE);
+				error.shutdownTimeout := TRUE;
+				nPhase := 31;
+			END_IF
+		END_IF
+		
+	31: // Back Clamp Release continued 
+		IF fbBTClampCtrl.Done AND fbBLClampCtrl.Done AND fbFClampCtrl.Done AND fbCClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bCClampExe	:= FALSE;
+			bFClampExe	:= FALSE;
+			bBTClampExe := FALSE;
+			shutdownTimeout(IN := FALSE);
+			nPhase := 40;
+		ELSE 
+			shutdownTimeout(IN := TRUE, PT := T#20S);
+			IF shutdownTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bCClampExe	:= FALSE;
+				bFClampExe	:= FALSE;
+				bBTClampExe := FALSE;
+				shutdownTimeout(IN := FALSE);
+				error.shutdownTimeout := TRUE;
+				nPhase := 40;
+			END_IF
+		END_IF
+		
+	40: // Stops all axis before MC_Power := FALSE
+		nPhase := 40;
+		
+	41: // MC_Power := FALSE
+		MCPowerX1(Axis := GantryX1, Enable := FALSE, Enable_Positive := FALSE, Enable_Negative := FALSE);
+		MCPowerX2(Axis := GantryX2, Enable := FALSE, Enable_Positive := FALSE, Enable_Negative := FALSE);
+		MCPowerY1(Axis := BladeY1, Enable := FALSE, Enable_Positive := FALSE, Enable_Negative := FALSE);
+		MCPowerY2(Axis := BladeY2, Enable := FALSE, Enable_Positive := FALSE, Enable_Negative := FALSE);
+		MCPowerZ1(Axis := CutterZ1, Enable := FALSE, Enable_Positive := FALSE, Enable_Negative := FALSE);
+		nPhase := 50;
+	
+	50: // Shutdown finished safe to power off
+		// Do nothing and wait for power off
+		// This state should not be exitable without first powering off the machine.
+END_CASE
+
+// fb calls to move machine axis
+fbMoveGantry(Axis := GantryX1, Execute := moveGantryExe, Position := 100.0, Velocity := 40);
+fbLLCtrl(fTargetPosition := 9999 , nTargetSpeed := 50, bMoveTrigger := bLLMoveExe);
+fbMoveBlade(Axis := BladeY1, Execute := moveBladeExe, Position := 215.0, Velocity := 40);
+
+// Clamp Move fb calls
+fbCClampCtrl(bExecute := bCClampExe, eDirection := CLAMP_UP);
+fbFClampCtrl(bExecute := bFClampExe, eDirection := CLAMP_UP);
+fbBLClampCtrl(bExecute := bBLClampExe, eDirection := CLAMP_DOWN);
+fbBTClampCtrl(bExecute := bBTClampExe, eDirection := CLAMP_DOWN);
+
+

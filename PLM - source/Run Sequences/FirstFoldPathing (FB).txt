@@ -1,0 +1,201 @@
+FUNCTION_BLOCK FirstFoldPathing
+VAR_INPUT
+	Execute : BOOL;
+	ElementHeight : LREAL;
+	Velocity : LREAL; // This is the velocity of the gantry but it effects the velocity of everything, 10 mm/s is defualt
+END_VAR
+VAR_OUTPUT
+	Done : BOOL;
+	Busy : BOOL;
+	Fail : BOOL;
+END_VAR
+VAR
+	lastExecute : BOOL;
+	xPos 		: LREAL;
+	yPos		: LREAL;
+	yVel	 	: LREAL;
+	actVel 		: DINT;
+	n			: INT := 10;
+	i			: INT := 0;
+	
+	
+	// --- Add to VAR section ---
+	leadY         : BOOL := TRUE;     // Y leads when TRUE, X leads when FALSE
+	leadInit      : BOOL := FALSE;    // one-time initialization of leader mode
+	ratioHys      : LREAL := 0.10;    // hysteresis around 1.0 for ratio (10%)
+	epsX          : LREAL := 0.5;     // small threshold for |x| in machine units (e.g., mm)
+	epsY          : LREAL := 0.5;     // small threshold for |y| in machine units (e.g., mm)
+	actVelLREAL   : LREAL;            // computed actuator velocity (floating)
+	yVelCmdMag    : LREAL;            // desired max velocity (magnitude) for the leader axis
+	ratioXY       : LREAL;            // |x| / |y|
+	pathRadius        : LREAL;            // circle radius
+	y2            : LREAL;            // geometry terms
+
+END_VAR
+
+VAR	
+	fbActControl	: LLControl;
+	fbMoveVelY		: MC_MoveVelocity;
+	stopY	: MC_Halt;
+	stopYExe : BOOL := FALSE;
+	stopped : BOOL := FALSE;
+END_VAR
+
+// Roughly speaking the max rpm of the stepper motors is 180. This means that the max xVel is around 225mm/s and the max yVel is 72mm/s. This max xVel is capped at 28 mm/s as the
+// max velocity of the actuator is 54 mm/s and during actuation the gantry velocity (xVel) must not exceed 54/2. This effectivly means that yVelMax is 72 mm/s and xVelMax is 28 mm/s.
+// This only realy applies during this function as no other functions required the same level of coordination.
+// Given a max element size of 200mm and a min size of 25mm then having the xVel at 28mm/s means it is 2 fast for everything but having it at 10mm/s will work for all sizes.
+// To reduced the chance of errors i have limited the max velocities to ~70% of there actual values.
+
+
+IF NOT Execute AND lastExecute THEN
+    Done := FALSE;
+    Fail := FALSE;
+    stopped := FALSE;
+    n := 10;
+    leadInit := FALSE; // re-init leader at the start of a new run
+END_IF
+
+IF Execute THEN
+    Busy := TRUE;
+
+    // --------------------------
+    // Read positions
+    // --------------------------
+//    bladePos := BladeY1.NcToPlc.ActPos;  // vertical component (Y), not used in this calc
+
+    // --------------------------
+    // Circle geometry
+    // --------------------------
+    pathRadius  := (ElementHeight + 1.5);
+    xPos  := ActuatorToMachinePos(nActuatorPos := ActuatorGVL.gActPos, nZeroPos := ActuatorGVL.nActuatorMaxPos );
+    y2 := pathRadius*pathRadius - xPos*xPos;
+    IF y2 < 0.0 THEN y2 := 0.0; END_IF; // guard for rounding
+    yPos  := SQRT(y2);                      // take + branch; Y+ is down in your machine
+
+    // --------------------------
+    // Desired max axis speed (magnitude)
+    // This is the "knob": the maximum speed either axis will run at.
+    // Keep it >= 0.0; Direction for Y is kept MC_Positive_Direction below.
+    // If you want reversible motion, you can add a separate sign control later.
+    // --------------------------
+    yVelCmdMag := ABS(Velocity);
+
+    // --------------------------
+    // Decide leader axis with hysteresis
+    // ratioXY = |x| / |y|. If ratioXY > 1 => Y would be faster => lead Y.
+    // --------------------------
+    IF (ABS(yPos) > epsY) THEN
+        ratioXY := ABS(xPos) / ABS(yPos);
+    ELSE
+        // Near edges: y ~ 0 → ratio is effectively infinite → lead Y
+        ratioXY := 1.0E9;
+    END_IF
+
+    // First-time init: pick a sensible leader based on current geometry
+    IF NOT leadInit THEN
+        leadY := (ratioXY >= 1.0); // Y leads if |x| >= |y| (start or near edges)
+        leadInit := TRUE;
+    ELSE
+        // Apply hysteresis so we don't chatter near ratio ≈ 1
+        IF ratioXY > (1.0 + ratioHys) THEN
+            leadY := TRUE;   // Y leads
+        ELSIF ratioXY < (1.0 - ratioHys) THEN
+            leadY := FALSE;  // X leads
+        END_IF
+    END_IF
+
+    // --------------------------
+    // Compute velocities based on leader axis
+    // Sign convention:
+    //  - Keep Y commanded positive (down), consistent with your previous MC_Positive_Direction.
+    //  - Actuator velocity sign stays positive (forward) unless geometry flips it; this
+    //    matches your original usage where actVel was positive in normal forward motion.
+    // --------------------------
+    IF leadY THEN
+        // Lead with Y to keep max axis speed = yVelCmdMag
+        yVel := yVelCmdMag;  // positive since Y+ is down and you use MC_Positive_Direction
+
+        IF ABS(xPos) > epsX THEN
+            // actVel = (y / x) * yVel   (no minus for Y+ down)
+            actVelLREAL := (yPos * yVel) / xPos;
+			IF actVelLREAL < 11 THEN
+				actVelLREAL := 0;
+			END_IF
+        ELSE
+            // Near center: x ~ 0, ill-conditioned → keep actuator nearly stopped
+            actVelLREAL := 0.0;
+        END_IF
+
+    ELSE
+        // Lead with X to keep max axis speed = yVelCmdMag
+        actVelLREAL := yVelCmdMag; // positive forward
+
+        IF ABS(yPos) > epsY THEN
+            // yVel = (x / y) * actVel   (no minus for Y+ down)
+            yVel := (xPos * actVelLREAL) / yPos;
+            IF yVel < 0.0 THEN
+                // If geometry causes sign flips (e.g., operating on different arc),
+                // you can force positive and adjust Direction if needed.
+                // For now, keep positive to match MC_Positive_Direction below.
+                yVel := ABS(yVel);
+            END_IF
+        ELSE
+            // Near edges: y ~ 0, ill-conditioned if we tried to compute (x/y)
+            yVel := yVelCmdMag;   // safe fallback; edges typically Y-dominant anyway
+        END_IF
+    END_IF
+
+    // Convert actuator velocity for your fbActControl (DINT)
+    actVel := LREAL_TO_DINT(actVelLREAL);
+
+    // --------------------------
+    // Update motion every 5 cycles (unchanged)
+    // --------------------------
+    IF n > 5 AND NOT stopped THEN
+
+        // Blade follows the arc — keep Direction positive (Y+ is down)
+        fbMoveVelY(
+            Axis := BladeY1,
+            Execute := TRUE,
+            Velocity := yVel, // already positive magnitude
+            Direction := MC_Positive_Direction,
+            BufferMode := MC_Aborting
+        );
+
+        // Actuator moves according to actVel (which may be small near edges/center)
+        fbActControl(
+            fTargetPosition := 3,
+            nTargetSpeed := actVel,
+            bMoveTrigger := TRUE
+        );
+
+        n := 0;
+    END_IF
+
+    // --------------------------
+    // Stop logic (as you had it)
+    // --------------------------
+    IF (stopY.Execute) AND i > 2 THEN
+        stopYExe := FALSE;
+        Done := TRUE;
+		Busy := FALSE;
+
+    ELSIF xPos < 3.5 AND NOT stopY.Execute THEN
+        stopYExe := TRUE;
+        fbActControl(bMoveTrigger := FALSE);
+        stopped := TRUE;
+        i := 0;
+    END_IF
+
+    n := n + 1;
+    i := i + 1;
+END_IF
+
+lastExecute := Execute;
+
+// Stop axis
+stopY(Axis := BladeY1, Execute := stopYExe);
+
+// Reset FBs
+fbMoveVelY(Axis := BladeY1, Execute := FALSE);

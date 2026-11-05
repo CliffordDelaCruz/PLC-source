@@ -1,0 +1,47 @@
+FUNCTION_BLOCK Startup
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+	eStartupStatus 		: StartupStatus;
+	ExitStartupState	: BOOL;
+END_VAR
+VAR
+END_VAR
+
+// Could be a good idea of this to also scan for any current errors/check there severity, some errors will be less server and can just be worked around.
+// My intention is to return to this and have it run diagnostics, as this is a bit cluncky, instead of what it currently does. 
+// It should work for now though.
+
+
+ExitStartupState := FALSE; // Resets exit condition, this is common across all Main FB's
+// This checks the last state to see what state the machine was in when it was shutdown and set the correct boot conditions
+CASE eLastState OF 
+	STATE_SHUTDOWN: // Machine was powered off correctly, safe to start
+		eStartupStatus := STARTUP_OK;
+	STATE_RUNNING: // Machine was turned off during operation, it will attemp to pick up where it left off
+		eStartupStatus := STARTUP_PAUSED;
+		error.shutdownWhileRunning := TRUE;
+	STATE_PAUSED: // Same as above but machine was paused
+		eStartupStatus := STARTUP_PAUSED;
+		error.shutdownWhileRunning := TRUE;
+	STATE_ERROR: // Machine was powered off, likely because of error
+		eStartupStatus := STARTUP_CRITICAL_ERROR;
+	STATE_STARTUP: // Either a cold start or someone has restarted a couple of times in a row, and there is possibly an error, this is more of a precaution
+		IF eSecondLastState = STATE_STARTUP THEN
+			eStartupStatus := STARTUP_OK; // First Start up
+		ELSE // Something is wrong...
+			eStartupStatus := STARTUP_CRITICAL_ERROR;
+		END_IF
+	STATE_IDLE: // Machine was idleing
+		IF eSecondLastState = STATE_ERROR THEN // Machine had error then went into idle before power off
+			eStartupStatus := STARTUP_CRITICAL_ERROR;
+		ELSE // Machine was not shut down correctly
+			eStartupStatus := STARTUP_ERROR;
+			error.badShutdown := TRUE; 
+		END_IF
+	ELSE
+		eStartupStatus := STARTUP_ERROR;
+END_CASE
+
+ExitStartupState := TRUE; // Automatically sets exit to true
+

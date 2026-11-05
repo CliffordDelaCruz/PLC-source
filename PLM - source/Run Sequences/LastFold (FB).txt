@@ -1,0 +1,624 @@
+FUNCTION_BLOCK LastFold
+VAR_INPUT
+	ElementSize : LREAL;
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+	TESTGO : BOOL := FALSE;
+	TESTGO2 : BOOL := TRUE;
+	fbCClampCtrl 	: CClampCtrl;
+	fbFClampCtrl 	: FClampCtrl;
+	fbBLClampCtrl 	: BLClampCtrl;
+	fbBTClampCtrl 	: BTClampCtrl;
+	foldTimeout 	: TON;
+	fbGantryAbs 	: MC_MoveAbsolute;
+	fbGantryHalt	: MC_Halt;
+	fbBladeAbs		: MC_MoveAbsolute;
+	fbBladeHalt 	: MC_Halt;
+	fbLLCtrl		: LLControl;
+	delayTimer		: TON;
+	delayTimer2		: TON;
+	fbFoldPathing   : FoldPathing;
+	fbStartPos		: StartPosition;
+END_VAR
+VAR
+	nPhase : INT := 0;
+	bCClampExe : BOOL := FALSE;
+	bFClampExe : BOOL := FALSE;
+	CClampDir  : ClampDirections;
+	FClampDir  : ClampDirections;
+	bBLClampExe : BOOL := FALSE;
+	BLClampDir  : ClampDirections;
+	bBTClampExe : BOOL := FALSE;
+	BTClampDir  : ClampDirections;
+	Busy : BOOL := FALSE;
+	Fail : BOOL := FALSE;
+	Done : BOOL := FALSE;
+	LLTgtPos : LREAL;
+	LLTgtVel : DINT;
+	bLLMoveExe : BOOL := FALSE;
+	bLastLLMoveExe : BOOL := FALSE;
+	bDelay : BOOL := FALSE; 
+	bGantryAbsExe : BOOL := FALSE;
+	GantryTgtPos	: LREAL;
+	GantryTgtVel	: LREAL;
+	bBladeAbsExe	: BOOL := FALSE;
+	BladeTgtPos	: LREAL;
+	BladeTgtVel	: LREAL;
+	n : INT := 0;
+	startPosExe : BOOL;
+	foldPathingExe 	: BOOL := FALSE;
+	LastFoldPathingExe 	: BOOL := FALSE;
+END_VAR
+
+
+
+CASE nPhase OF 
+// --------------------------------------------------------------------------------------------------------------------------------------
+	0: // Start sequence/hold here
+		startPosExe := TRUE;
+		nPhase := 1;
+		
+	1: // Start sequence
+		foldTimeout(IN := FALSE);
+		IF fbStartPos.Done THEN 
+			startPosExe := FALSE;
+			nPhase := 2;
+		END_IF
+		
+	2: // Back Clamp engage
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			BLClampDir 	:= CLAMP_UP;
+			bBTClampExe := TRUE;
+			BTClampDir 	:= CLAMP_DOWN;
+			FoldTimeout(IN := FALSE);
+			nPhase := 3;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	3: // Back Clamp engage continued 
+		IF fbBTClampCtrl.Done AND fbBLClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bBTClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 10;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+// --------------------------------------------------------------------------------------------------------------------------------------	
+	
+	10: // Cutter Clamp down
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_DOWN;
+			FoldTimeout(IN := FALSE);
+			nPhase := 11;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#50S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	11: // Cutter clamp down continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 15;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	15: // Front Clamp up
+		IF NOT fbFClampCtrl.Busy THEN
+			bFClampExe := TRUE;
+			FClampDir := CLAMP_UP;
+			FoldTimeout(IN := FALSE);
+			nPhase := 16;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#50S);
+			IF foldTimeout.Q THEN
+				bFClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	16: // Front clamp up continued
+		IF fbFClampCtrl.Done THEN
+			bFClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 20;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bFClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	20: // Fold the element
+		delayTimer(IN := TRUE, PT := T#3S);
+		IF NOT fbFoldPathing.Busy AND delayTimer.Q THEN 
+			delayTimer(IN := FALSE);
+			foldPathingExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 21;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#60S);
+			IF foldTimeout.Q THEN
+				foldPathingExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	21: // Fold the element continued
+		IF fbFoldPathing.Done THEN
+			foldPathingExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 30;
+		ELSIF fbFoldPathing.Fail THEN
+			foldPathingExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.pathingError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#50S);
+			IF foldTimeout.Q THEN
+				foldPathingExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	30: // Cutter Clamp up
+		delayTimer(IN := TRUE, PT := T#3S);
+		IF NOT fbCClampCtrl.Busy AND delayTimer.Q THEN 
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_UP;
+			delayTimer(IN := FALSE);
+			FoldTimeout(IN := FALSE);
+			nPhase := 31;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#8S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	31: // Cutter clamp up continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 40;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	 
+	40: // Slightly seperate the Gantry and cutter assembly front the back
+		IF NOT fbLLCtrl.Busy AND NOT fbGantryAbs.Busy THEN
+			LLTgtPos := 8.0;
+			LLTgtVel := 40;
+			bLLMoveExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 41;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bLLMoveExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	41: // Slightly seperate the Gantry and cutter assembly front the back continued
+		IF fbLLCtrl.MoveIssued THEN
+			GantryTgtPos := 1.9;
+			GantryTgtVel := 20;
+			bGantryAbsExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 42;
+		ELSE
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bLLMoveExe := FALSE;
+				bGantryAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	42: // Slightly seperate the Gantry and cutter assembly from the back continued
+		IF fbLLCtrl.Done AND fbGantryAbs.Done THEN
+			bLLMoveExe := FALSE;
+			bGantryAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 50;
+		ELSIF fbGantryAbs.Error THEN 
+			bLLMoveExe := FALSE;
+			bGantryAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.gantryMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE
+			foldTimeout(IN := TRUE, PT := T#15S);
+			IF foldTimeout.Q THEN
+				bLLMoveExe := FALSE;
+				bGantryAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+
+	50: // Cutter Clamp down
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_DOWN;
+			FoldTimeout(IN := FALSE);
+			nPhase := 51;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	51: // Cutter clamp down continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 60;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	60: // Retract the blade to the top
+		IF NOT fbBladeAbs.Busy THEN
+			BladeTgtPos := -8.0;
+			BladeTgtVel := 40;
+			bBladeAbsExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 61;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBladeAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	61: // Retract the blade to the top continued
+		IF fbBladeAbs.Done THEN
+			bBladeAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 70;
+		ELSIF fbBladeAbs.Error THEN 
+			bBladeAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.bladeMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBladeAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF		
+	
+	70: // Back Clamp release
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			BLClampDir 	:= CLAMP_DOWN;
+			bBTClampExe := TRUE;
+			BTClampDir 	:= CLAMP_UP;
+			FoldTimeout(IN := FALSE);
+			nPhase := 71;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	71: // Back Clamp Release continued 
+		IF fbBTClampCtrl.Done AND fbBLClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bBTClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 75;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	75: // Front Clamp up so cutter assembly can move
+		IF NOT fbFClampCtrl.Busy THEN
+			bFClampExe := TRUE;
+			FClampDir := CLAMP_UP;
+			FoldTimeout(IN := FALSE);
+			nPhase := 76;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bFClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	76: // Front clamp up continued
+		IF fbFClampCtrl.Done THEN
+			bFClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 80;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bFClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	80: // Feed material forward, first move the gantry slight forward to avoid colisions
+		IF NOT fbLLCtrl.Busy AND NOT fbGantryAbs.Busy THEN
+			GantryTgtPos := 2;
+			GantryTgtVel := 20;
+			bGantryAbsExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 81;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bGantryAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	81: // Feed material forword, after the gantry has moved the cutter assembly moves
+		IF fbGantryAbs.Done THEN
+			LLTgtPos := 4.0;
+			LLTgtVel := 20;
+			bLLMoveExe := TRUE;
+			FoldTimeout(IN := FALSE);
+			nPhase := 82;
+		ELSIF fbGantryAbs.Error THEN
+			bLLMoveExe := FALSE;
+			bGantryAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.gantryMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bLLMoveExe := FALSE;
+				bGantryAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	82: // Feed material forward, feeding completed?
+		IF fbLLCtrl.Done AND fbGantryAbs.Done THEN
+			bLLMoveExe := FALSE;
+			bGantryAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 90;
+		ELSIF fbGantryAbs.Error THEN 
+			bLLMoveExe := FALSE;
+			bGantryAbsExe := FALSE;
+			foldTimeout(IN := FALSE);
+			error.gantryMoveError := TRUE;
+			Busy := FALSE;
+			Fail := TRUE;
+		ELSE
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bLLMoveExe := FALSE;
+				bGantryAbsExe := FALSE;
+				FoldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	90: // Back Clamp engage
+		IF NOT fbBLClampCtrl.Busy AND NOT fbBTClampCtrl.Busy THEN
+			bBLClampExe := TRUE;
+			BLClampDir 	:= CLAMP_UP;
+			bBTClampExe := TRUE;
+			BTClampDir 	:= CLAMP_DOWN;
+			FoldTimeout(IN := FALSE);
+			nPhase := 91;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	91: // Back Clamp engage continued 
+		IF fbBTClampCtrl.Done AND fbBLClampCtrl.Done THEN
+			bBLClampExe := FALSE;
+			bBTClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 100;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bBLClampExe := FALSE;
+				bBTClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	100: // Cutter Clamp up
+		IF NOT fbCClampCtrl.Busy THEN
+			bCClampExe := TRUE;
+			CClampDir := CLAMP_UP;
+			FoldTimeout(IN := FALSE);
+			nPhase := 101;
+		ELSE	
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+		
+	101: // Cutter clamp up continued
+		IF fbCClampCtrl.Done THEN
+			bCClampExe := FALSE;
+			foldTimeout(IN := FALSE);
+			nPhase := 110;
+		ELSE 
+			foldTimeout(IN := TRUE, PT := T#5S);
+			IF foldTimeout.Q THEN
+				bCClampExe := FALSE;
+				foldTimeout(IN := FALSE);
+				error.foldTimeout := TRUE;
+				Busy := FALSE;
+				Fail := TRUE;
+			END_IF
+		END_IF
+	
+	110: // Reset to starting position
+		foldTimeout(IN := FALSE);
+		delaytimer2(IN := TRUE, PT := T#2S);
+		IF delaytimer2.Q THEN
+			nPhase := 0;
+			delayTimer2(IN := FALSE);
+		END_IF
+	
+	
+END_CASE
+
+// Clamp Move fb calls
+fbCClampCtrl(bExecute := bCClampExe, EDirection := CClampDir);
+fbFClampCtrl(bExecute := bFClampExe, EDirection := FClampDir);
+fbBLClampCtrl(bExecute := bBLClampExe, EDirection := BLClampDir);
+fbBTClampCtrl(bExecute := bBTClampExe, EDirection := BTClampDir);
+
+fbStartPos(ElementHeight := ElementSize, Enable := startPosExe);
+fbFoldPathing(Execute := foldPathingExe, ElementHeight := 150, Velocity := 10);
+
+// Gantry and blade movement fb calls
+fbGantryAbs(Axis := GantryX1, Execute := bGantryAbsExe, Position := GantryTgtPos, Velocity := GantryTgtVel);
+fbBladeAbs(Axis := BladeY1, Execute := bBladeAbsExe, Position := BladeTgtPos, Velocity := BladeTgtVel);
+
+IF bLLMoveExe OR bLastLLMoveExe THEN 
+	fbLLCtrl(fTargetPosition := LLTgtPos, nTargetSpeed := LLTgtVel, bMoveTrigger := bLLMoveExe);
+END_IF
+
+bLastLLMoveExe := bLLMoveExe;
