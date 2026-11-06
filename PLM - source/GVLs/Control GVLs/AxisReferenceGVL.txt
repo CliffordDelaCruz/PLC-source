@@ -1,0 +1,8 @@
+// This list is all of the axis references for linking the nc axes to the plc varibles
+VAR_GLOBAL
+	GantryX1	: AXIS_REF; // This is the master X axis
+	GantryX2	: AXIS_REF;
+	BladeY1		: AXIS_REF; // This is the master Y axis
+	BladeY2		: AXIS_REF;
+	CutterZ1	: AXIS_REF;
+END_VAR

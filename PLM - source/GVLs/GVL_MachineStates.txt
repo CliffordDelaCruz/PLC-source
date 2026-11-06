@@ -1,0 +1,9 @@
+VAR_GLOBAL RETAIN
+	eRequestState		: MachineStates := STATE_NULL; 
+	eCurrentState 		: MachineStates := STATE_NULL; // Current Machine state...
+	eLastState 			: MachineStates := STATE_NULL; 
+	eSecondLastState	: MachineStates := STATE_NULL;
+	eIllegalFromstate	: MachineStates := STATE_NULL;
+	eIllegalToState		: MachineStates := STATE_NULL;
+	slowMode			: BOOL := FALSE; //Machine in slow mode will move very slowly and with low max current to reduce force
+END_VAR

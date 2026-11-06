@@ -1,0 +1,19 @@
+// This contains varibles for linking actuator program to the rest of the main program.
+// Setting/reading theses values will reflect current actuator states
+{attribute 'qualified_only'}
+VAR_GLOBAL
+	gCmdPos 		: DINT; // Target position for actuator
+	gCmdSpeed 		: DINT; // Target speed
+	gCmdCurrent 	: DINT;	// Max current
+	gCmdReserved 	: BOOL;	// Reserved, this is used to wake the actuator if nessacary
+	gCmdBit 		: BOOL;	// Control bit, to enable motion
+		
+	gActPos			: DINT; // Actual position
+	gActCurrent		: DINT;	// Actual current
+	gActSpeed		: DINT;	// Actual speed
+	gMotionFlag		: BYTE; // Flaged if actuator is moving
+	gErrorFlag		: BYTE;	// Error flags for actuator
+	
+	nActuatorMaxPos : DINT := 3940;	// This is the position in the actuators coordinates where it is at full extension and it is touching the 
+									// back plate 0,0 position. It is treated as the max actuator position
+END_VAR

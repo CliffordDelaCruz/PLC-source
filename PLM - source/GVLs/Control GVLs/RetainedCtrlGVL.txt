@@ -1,0 +1,14 @@
+{attribute 'qualified_only'}
+VAR_GLOBAL RETAIN
+	bladeHomePos			: LREAL := 23.0; // This is the defualt position that will be set once the machine has homed to the poximity switches. This one if for the blade	
+	bladeHomePosOffset		: LREAL := 0.0; // This is the offset from the set home position
+	bladePosOffsetY1		: LREAL := 0.0; // This is the offset for axis Y1, this allow each motor to be adjusted independently if nessicary
+	bladePosOffsetY2		: LREAL := 0.0;	// Y2
+	gantryHomePos			: LREAL := 6.5; // This one is for the gantry. erik note, I don't think this is actually used.
+	gantryHomePosOffset		: LREAL := 0.0; // ''
+	gantryPosOffsetX1		: LREAL := 0.0; // ''
+	gantryPosOffsetX2		: LREAL := 0.0; // ''
+	cutterHomePos			: LREAL := 0.0; // Cutter ...
+	cutterHomePosOffset 	: LREAL := 0.0; // ''
+END_VAR
+
